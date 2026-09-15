@@ -31,7 +31,7 @@ Bridge [Linear](https://linear.app) into [Taskwarrior](https://taskwarrior.org) 
 ## Install
 
 ```sh
-git clone https://github.com/YOU/taskwarrior-linear.git
+git clone <this repo> taskwarrior-linear
 cd taskwarrior-linear
 ./install.sh
 ```
