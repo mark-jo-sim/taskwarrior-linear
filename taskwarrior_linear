@@ -26,10 +26,12 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "Documents" / "obsidian")))
@@ -846,6 +848,95 @@ def cmd_done(args):
 
 
 # --------------------------------------------------------------------------
+# Git-based sync (tasks + task notes between machines)
+
+SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(Path.home() / "projects" / "tw-sync")))
+
+
+def git(*args, check=True):
+    r = subprocess.run(["git", "-C", str(SYNC_REPO), *args],
+                       capture_output=True, text=True)
+    if check and r.returncode != 0:
+        die(f"git -C {SYNC_REPO} {' '.join(args)} failed: {r.stderr.strip()}")
+    return r
+
+
+def git_out(*args):
+    return git(*args).stdout.strip()
+
+
+def ensure_sync_repo():
+    SYNC_REPO.mkdir(parents=True, exist_ok=True)
+    if not (SYNC_REPO / ".git").exists():
+        git("init", "-q")
+
+
+def git_pull_rebase():
+    """Returns True when up to date / pulled cleanly, False on conflict."""
+    if not git_out("remote"):
+        return True  # no remote yet — local repo only
+    return git("pull", "--rebase", check=False).returncode == 0
+
+
+def mirror(src, dst):
+    """rsync mirror (incl. deletions) src/ -> dst/."""
+    dst.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["rsync", "-a", "--delete", str(src) + "/", str(dst) + "/"],
+                   check=True)
+
+
+def sync_push():
+    ensure_sync_repo()
+    if not git_pull_rebase():
+        die(f"git pull conflict — resolve in {SYNC_REPO}, then re-run")
+    # `task export` covers ALL statuses (pending/completed/deleted), so
+    # completions and deletions propagate as tombstones; `task import`
+    # upserts by uuid. Export is one task per line → git merges cleanly
+    # unless the same task changed on both machines.
+    (SYNC_REPO / "tasks.json").write_text(task("export"))
+    src = VAULT / NOTES_DIR
+    if src.exists():
+        mirror(src, SYNC_REPO / "notes" / NOTES_DIR)
+    if git_out("status", "--porcelain"):
+        git("add", "-A")
+        git("commit", "-q", "-m",
+            f"sync {socket.gethostname()} "
+            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    print(f"synced local state → {SYNC_REPO}")
+    if git_out("remote"):
+        git("push")
+        print("pushed to remote")
+    else:
+        print("no remote configured — add one with: "
+              f"git -C {SYNC_REPO} remote add origin <url>")
+
+
+def sync_pull():
+    ensure_sync_repo()
+    if not git_pull_rebase():
+        die(f"git pull conflict — resolve in {SYNC_REPO}, then re-run")
+    tj = SYNC_REPO / "tasks.json"
+    if tj.exists():
+        # import emits per-task action lines on stdout: add/mod/del/skip
+        out = task("import", str(tj))
+        counts = {a: len(re.findall(rf"^\s*{a}\s", out, re.M))
+                  for a in ("add", "mod", "del", "skip")}
+        print(f"taskwarrior: {counts['add']} added, {counts['mod']} updated, "
+              f"{counts['del']} deleted, {counts['skip']} unchanged")
+    notes = SYNC_REPO / "notes" / NOTES_DIR
+    if notes.exists():
+        mirror(notes, VAULT / NOTES_DIR)
+        print(f"notes → {VAULT / NOTES_DIR}")
+
+
+def cmd_sync(args):
+    if args.direction == "push":
+        sync_push()
+    else:
+        sync_pull()
+
+
+# --------------------------------------------------------------------------
 
 
 def main():
@@ -929,6 +1020,15 @@ def main():
     )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_done)
+
+    sp = sub.add_parser(
+        "sync", help="git-based sync of tasks + task notes between machines"
+    )
+    sp.add_argument(
+        "direction", choices=["push", "pull"],
+        help="push: export + commit + push · pull: pull + import + mirror notes",
+    )
+    sp.set_defaults(fn=cmd_sync)
 
     args = p.parse_args()
     args.fn(args)

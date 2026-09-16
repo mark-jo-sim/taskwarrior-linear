@@ -114,6 +114,34 @@ taskwarrior_linear import-milestone <id> [--all]       # umbrella + its issues
 | `:TWNote` | jump straight to a task's note |
 | `<leader>tt` | toggle taskwarrior-tui terminal |
 
+### Multi-machine sync (git only, no third-party services)
+
+`sync` round-trips the whole task DB and the task notes through a git repo you control:
+
+```
+taskwarrior_linear sync push   # task export + notes → commit → git push
+taskwarrior_linear sync pull   # git pull + task import + notes mirror
+```
+
+How it works:
+
+- `task export` covers **all** statuses — completions and deletions travel as tombstones; `task import` upserts by uuid (add / update / skip).
+- Export emits one task per line, so git merges tasks.json cleanly; you only get a conflict when the *same task* changed on both machines since the last sync.
+- Notes (`<vault>/Tasks/`) mirror into the repo with rsync, deletions included.
+- The sync repo (default `~/projects/tw-sync`, override with `TWL_SYNC_REPO`) auto-inits on first push; add your remote once:
+
+```sh
+git -C ~/projects/tw-sync remote add origin git@yourserver:git/tw-sync.git
+```
+
+Server side, once: `git init --bare ~/git/tw-sync.git`.
+
+Ordering matters: run `sync push` after working on a machine and `sync pull` before working on the next — a pull from a stale repo resurrects tasks you deleted after its last push (the file predates the deletion). Twice-a-day cron on both machines works if edits don't overlap:
+
+```
+15 9,17 * * *  taskwarrior_linear sync pull && taskwarrior_linear sync push
+```
+
 ### Taskwarrior filters
 
 The UDAs are plain Taskwarrior filters:
