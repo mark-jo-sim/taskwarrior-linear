@@ -1135,7 +1135,13 @@ def cmd_context(args):
         return
     kind, key = resolve_map_ref(args.ref)
     filt, name = context_filter(kind, key)
-    task("config", f"context.{name}.read", filt)
+    # `context define` sets read AND write to the same filter. The write
+    # filter auto-applies the filter's attributes to every task added while
+    # the context is active — and for milestones the filter is an OR
+    # expression, which is meaningless as a write filter. Blank it: these
+    # contexts are read-only by design.
+    task("context", "define", name, filt)
+    task("config", f"context.{name}.write", "")
     task("context", name)
     n = task("count").strip().splitlines()[-1]
     print(f"context '{name}' active — {n} visible")
