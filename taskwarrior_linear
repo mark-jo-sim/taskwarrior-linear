@@ -34,8 +34,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian")))
-NOTES_DIR = "Tasks"
+VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian" / "Tasks")))
 API_URL = "https://api.linear.app/graphql"
 KEY_FILE = Path.home() / ".config" / "taskwarrior_linear" / "key"
 ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
@@ -369,7 +368,7 @@ def note_path_for(t):
     ident = t.get("linear")
     title = re.sub(r"^[A-Z][A-Z0-9]*-\d+\s+", "", t["description"])
     stem = f"{ident} {slugify(title)}" if ident else f"{t['uuid'][:8]} {slugify(title)}"
-    return VAULT / NOTES_DIR / f"{stem}.md"
+    return VAULT / f"{stem}.md"
 
 
 def have_api_key():
@@ -859,12 +858,13 @@ def cmd_done(args):
 # bridge — `task export` writes tasks.json into the repo, `task import`
 # upserts it back by uuid.
 
-SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(VAULT / NOTES_DIR)))
+SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(VAULT)))
 
 
 def git(*args, check=True):
-    r = subprocess.run(["git", "-C", str(SYNC_REPO), *args],
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        ["git", "-C", str(SYNC_REPO), *args], capture_output=True, text=True
+    )
     if check and r.returncode != 0:
         die(f"git -C {SYNC_REPO} {' '.join(args)} failed: {r.stderr.strip()}")
     return r
@@ -901,16 +901,21 @@ def sync_push():
     (SYNC_REPO / "tasks.json").write_text(task("export"))
     if git_out("status", "--porcelain"):
         git("add", "-A")
-        git("commit", "-q", "-m",
-            f"sync {socket.gethostname()} "
-            f"{datetime.now().strftime('%Y-%m-%d %H:%M')}")
+        git(
+            "commit",
+            "-q",
+            "-m",
+            f"sync {socket.gethostname()} {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        )
     print(f"synced local state → {SYNC_REPO}")
     if git_out("remote"):
         git("push")
         print("pushed to remote")
     else:
-        print("no remote configured — add one with: "
-              f"git -C {SYNC_REPO} remote add origin <url>")
+        print(
+            "no remote configured — add one with: "
+            f"git -C {SYNC_REPO} remote add origin <url>"
+        )
 
 
 def sync_pull():
@@ -921,10 +926,14 @@ def sync_pull():
     if tj.exists():
         # import emits per-task action lines on stdout: add/mod/del/skip
         out = task("import", str(tj))
-        counts = {a: len(re.findall(rf"^\s*{a}\s", out, re.M))
-                  for a in ("add", "mod", "del", "skip")}
-        print(f"taskwarrior: {counts['add']} added, {counts['mod']} updated, "
-              f"{counts['del']} deleted, {counts['skip']} unchanged")
+        counts = {
+            a: len(re.findall(rf"^\s*{a}\s", out, re.M))
+            for a in ("add", "mod", "del", "skip")
+        }
+        print(
+            f"taskwarrior: {counts['add']} added, {counts['mod']} updated, "
+            f"{counts['del']} deleted, {counts['skip']} unchanged"
+        )
 
 
 def cmd_sync(args):
@@ -1070,8 +1079,10 @@ def resolve_map_ref(ref):
             return "task", t["linear"]
         if t.get("linearproject") and t.get("project"):
             return "project", t["project"]
-        die(f"task {t['id']} has no Linear linkage — map its project key "
-            f"instead, e.g. `map {t.get('project') or 'TEAM'} <dir>`")
+        die(
+            f"task {t['id']} has no Linear linkage — map its project key "
+            f"instead, e.g. `map {t.get('project') or 'TEAM'} <dir>`"
+        )
     if re.fullmatch(r"[0-9a-f]{8}", ref):
         matches = [m for m in fetch_milestones() if m["id"].startswith(ref)]
         if not matches:
@@ -1081,8 +1092,10 @@ def resolve_map_ref(ref):
         return "task", matches[0]["id"]
     if re.fullmatch(r"[A-Z][A-Z0-9]*(\.[^\s]+)?", ref):
         return "project", ref
-    die(f"unrecognized ref: {ref} (issue ident, task id/uuid, milestone "
-        f"prefix, or TW project key)")
+    die(
+        f"unrecognized ref: {ref} (issue ident, task id/uuid, milestone "
+        f"prefix, or TW project key)"
+    )
 
 
 def cmd_map(args):
@@ -1097,7 +1110,9 @@ def cmd_map(args):
     else:
         if args.directory not in entry["dirs"]:
             entry["dirs"].append(args.directory)
-        print(f'mapped {kind}."{key}": {[args.directory] + [d for d in entry["dirs"] if d != args.directory]}')
+        print(
+            f'mapped {kind}."{key}": {[args.directory] + [d for d in entry["dirs"] if d != args.directory]}'
+        )
     save_workdirs(cfg)
     print(f"  {WORKDIRS_FILE}")
 
@@ -1162,13 +1177,19 @@ def cmd_here(args):
         out = []
         for t in tasks:
             p = note_path_for(t)
-            out.append({
-                "id": t["id"], "uuid": t["uuid"], "description": t["description"],
-                "status": t["status"], "linear": t.get("linear"),
-                "depends": t.get("depends"),
-                "project": t.get("_here_project"),
-                "note": str(p), "note_exists": p.exists(),
-            })
+            out.append(
+                {
+                    "id": t["id"],
+                    "uuid": t["uuid"],
+                    "description": t["description"],
+                    "status": t["status"],
+                    "linear": t.get("linear"),
+                    "depends": t.get("depends"),
+                    "project": t.get("_here_project"),
+                    "note": str(p),
+                    "note_exists": p.exists(),
+                }
+            )
         print(json.dumps(out, indent=2))
         return
     if not tasks:
@@ -1178,8 +1199,9 @@ def cmd_here(args):
             print('  [project."VOIP"]\n  dirs = ["~/projects/voip"]')
         return
     for t in tasks:
-        ident = t.get("linear") or ("(project %s)" % t.get("_here_project") if
-                                    t.get("_here_project") else "")
+        ident = t.get("linear") or (
+            "(project %s)" % t.get("_here_project") if t.get("_here_project") else ""
+        )
         sub = "  ⤷ " if is_subtask(t) else "    "
         print(f"{t['id']:>4} {sub}{ident:<12} {t['description']}")
     print(f"\n{len(tasks)} tasks under {cwd}")
@@ -1209,32 +1231,37 @@ def main():
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("issues",
-                    help="list my open Linear issues (--json for scripts/pickers)")
+    sp = sub.add_parser(
+        "issues", help="list my open Linear issues (--json for scripts/pickers)"
+    )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_issues)
 
-    sp = sub.add_parser("import",
-                    help="import one Linear issue (e.g. ENG-123) as a task; idempotent")
+    sp = sub.add_parser(
+        "import", help="import one Linear issue (e.g. ENG-123) as a task; idempotent"
+    )
     sp.add_argument("issue", help="Linear issue identifier, e.g. ENG-123")
     sp.set_defaults(fn=cmd_import)
 
-    sp = sub.add_parser("projects",
-                    help="list open projects; --search NAME / --lead me filters server-side")
+    sp = sub.add_parser(
+        "projects",
+        help="list open projects; --search NAME / --lead me filters server-side",
+    )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.add_argument("--search", help="case-insensitive substring of project name")
     sp.add_argument("--lead", help="project lead (owner): name substring, or 'me'")
     sp.set_defaults(fn=cmd_projects)
 
-    sp = sub.add_parser("milestones",
-                    help="list open milestones with their projects and targets")
+    sp = sub.add_parser(
+        "milestones", help="list open milestones with their projects and targets"
+    )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_milestones)
 
     sp = sub.add_parser(
         "import-project",
-                    help="import a project: [project] umbrella task + its open issues "
-                         "(yours by default, --all for everyone's)"
+        help="import a project: [project] umbrella task + its open issues "
+        "(yours by default, --all for everyone's)",
     )
     sp.add_argument("slug", help="Linear project slugId (see `projects`)")
     sp.add_argument(
@@ -1261,15 +1288,16 @@ def main():
 
     sp = sub.add_parser(
         "sub",
-                    help="add a local-only subtask (never pushed to Linear); "
-                         "the parent issue blocks on it"
+        help="add a local-only subtask (never pushed to Linear); "
+        "the parent issue blocks on it",
     )
     sp.add_argument("ref", help="Linear identifier or taskwarrior task id")
     sp.add_argument("description", nargs="+", help="subtask description")
     sp.set_defaults(fn=cmd_sub)
 
-    sp = sub.add_parser("note",
-                    help="create/open the task's Obsidian note (--print for the path only)")
+    sp = sub.add_parser(
+        "note", help="create/open the task's Obsidian note (--print for the path only)"
+    )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.add_argument(
         "--print",
@@ -1287,62 +1315,73 @@ def main():
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_open)
 
-    sp = sub.add_parser("show",
-                    help="show a task with its issue/milestone/project and what it blocks on")
+    sp = sub.add_parser(
+        "show",
+        help="show a task with its issue/milestone/project and what it blocks on",
+    )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_show)
 
     sp = sub.add_parser(
         "done",
-                    help="complete a task; issue-tasks also move the Linear issue to Done "
-                         "(subtasks/umbrellas never touch Linear)"
+        help="complete a task; issue-tasks also move the Linear issue to Done "
+        "(subtasks/umbrellas never touch Linear)",
     )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_done)
 
     sp = sub.add_parser(
         "sync",
-                    help="push: export task DB + commit notes dir + git push · "
-                         "pull: git pull + uuid-upsert import"
+        help="push: export task DB + commit notes dir + git push · "
+        "pull: git pull + uuid-upsert import",
     )
     sp.add_argument(
-        "direction", choices=["push", "pull"],
+        "direction",
+        choices=["push", "pull"],
         help="push: export + commit + push · pull: pull + import + mirror notes",
     )
     sp.set_defaults(fn=cmd_sync)
 
     sp = sub.add_parser(
         "here",
-                    help="list tasks whose work dirs (workdirs.toml) cover $PWD; "
-                         "--notes prints existing note paths for agents"
+        help="list tasks whose work dirs (workdirs.toml) cover $PWD; "
+        "--notes prints existing note paths for agents",
     )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
-    sp.add_argument("--notes", action="store_true",
-                    help="print resolved note paths that exist (agent context)")
+    sp.add_argument(
+        "--notes",
+        action="store_true",
+        help="print resolved note paths that exist (agent context)",
+    )
     sp.add_argument("--dir", help="use this directory instead of $PWD")
     sp.set_defaults(fn=cmd_here)
 
     sp = sub.add_parser(
         "map",
-                    help="add (or --remove) a work dir for a project/issue/milestone "
-                         "in workdirs.toml; milestone dirs inherit to their issues"
+        help="add (or --remove) a work dir for a project/issue/milestone "
+        "in workdirs.toml; milestone dirs inherit to their issues",
     )
-    sp.add_argument("ref",
-                    help="issue ident (VOIP-1), task id/uuid, milestone 8-hex "
-                         "prefix, or TW project key (VOIP / VOIP.slug)")
+    sp.add_argument(
+        "ref",
+        help="issue ident (VOIP-1), task id/uuid, milestone 8-hex "
+        "prefix, or TW project key (VOIP / VOIP.slug)",
+    )
     sp.add_argument("directory", help="work directory (~/... allowed)")
-    sp.add_argument("--remove", action="store_true",
-                    help="remove the dir instead of adding it")
+    sp.add_argument(
+        "--remove", action="store_true", help="remove the dir instead of adding it"
+    )
     sp.set_defaults(fn=cmd_map)
 
     sp = sub.add_parser(
         "context",
-                    help="activate a taskwarrior context scoping reports/tui to a "
-                         "project/issue/milestone + children; 'none' clears, 'list' shows"
+        help="activate a taskwarrior context scoping reports/tui to a "
+        "project/issue/milestone + children; 'none' clears, 'list' shows",
     )
-    sp.add_argument("ref",
-                    help="issue ident, task id/uuid, milestone prefix, TW "
-                         "project key — or 'none' to clear, 'list' to show")
+    sp.add_argument(
+        "ref",
+        help="issue ident, task id/uuid, milestone prefix, TW "
+        "project key — or 'none' to clear, 'list' to show",
+    )
     sp.set_defaults(fn=cmd_context)
 
     args = p.parse_args()
