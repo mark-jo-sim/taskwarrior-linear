@@ -39,6 +39,17 @@ local function json_run(cmd)
   return data
 end
 
+-- vim.json.decode maps JSON null to vim.NIL — a TRUTHY userdata value.
+-- `x or fallback` therefore keeps vim.NIL and later blows up on #, :sub,
+-- arithmetic, or concat. Never use `or` on decoded fields; check the type.
+local function jstr(v, fallback)
+  return type(v) == "string" and v or (fallback or "")
+end
+
+local function jnum(v)
+  return tonumber(v) or 0
+end
+
 local function pick(entries, opts)
   local pickers = require("telescope.pickers")
   local finders = require("telescope.finders")
@@ -98,12 +109,12 @@ function M.linear_issues()
         i.title,
         "",
         "identifier: " .. i.identifier,
-        "state:      " .. (i.state and i.state.name or "?"),
-        "team:       " .. (i.team and i.team.key or "-"),
-        "project:    " .. (i.project and i.project.name or "-"),
-        "due:        " .. ((i.dueDate or ""):sub(1, 10)),
+        "state:      " .. (type(i.state) == "table" and i.state.name or "?"),
+        "team:       " .. (type(i.team) == "table" and i.team.key or "-"),
+        "project:    " .. (type(i.project) == "table" and i.project.name or "-"),
+        "due:        " .. jstr(i.dueDate):sub(1, 10),
         "",
-        (i.description or i.url or ""),
+        jstr(i.description, jstr(i.url)),
       }
       vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
     end,
@@ -112,13 +123,13 @@ function M.linear_issues()
   pick(issues, {
     title = "Linear — my issues",
     entry_maker = function(i)
-      local due = (i.dueDate or ""):sub(1, 10)
+      local due = jstr(i.dueDate):sub(1, 10)
       if due == "" then
         due = "          "
       end
       return {
         value = i,
-        display = string.format("%-12s %-14s %s  %s", i.identifier, i.state and i.state.name or "?", due, i.title),
+        display = string.format("%-12s %-14s %s  %s", i.identifier, type(i.state) == "table" and i.state.name or "?", due, i.title),
         ordinal = i.identifier .. " " .. i.title,
       }
     end,
@@ -159,15 +170,15 @@ function M.linear_projects(term)
   pick(projects, {
     title = "Linear — projects" .. (term ~= "" and (" · " .. term) or ""),
     entry_maker = function(p)
-      local due = (p.targetDate or ""):sub(1, 10)
+      local due = jstr(p.targetDate):sub(1, 10)
       if due == "" then
         due = "          "
       end
       return {
         value = p,
-        display = string.format("%-14s %-8s %s  %3d of %-3d  %s", p.slugId, p.state, due,
-          math.floor((p.progress or 0) * (p.scope or 0) + 0.5), p.scope or 0, p.name),
-        ordinal = p.slugId .. " " .. p.name .. " " .. (p.lead or ""),
+        display = string.format("%-14s %-8s %s  %3d of %-3d  %s", p.slugId, jstr(p.state), due,
+          math.floor(jnum(p.progress) * jnum(p.scope) + 0.5), jnum(p.scope), p.name),
+        ordinal = p.slugId .. " " .. p.name .. " " .. jstr(p.lead),
       }
     end,
     cr = function(prompt_bufnr)
@@ -197,14 +208,14 @@ function M.linear_milestones()
   pick(milestones, {
     title = "Linear — milestones",
     entry_maker = function(m)
-      local due = (m.targetDate or ""):sub(1, 10)
+      local due = jstr(m.targetDate):sub(1, 10)
       if due == "" then
         due = "          "
       end
-      local pct = math.floor(math.min(m.progress or 0, 1.0) * 100 + 0.5)
+      local pct = math.floor(math.min(jnum(m.progress), 1.0) * 100 + 0.5)
       return {
         value = m,
-        display = string.format("%-8s %-10s %s  %3d%%  %s — %s", m.id:sub(1, 8), m.status,
+        display = string.format("%-8s %-10s %s  %3d%%  %s — %s", m.id:sub(1, 8), jstr(m.status),
           due, pct, m.project.name, m.name),
         ordinal = m.project.name .. " " .. m.name,
       }
@@ -237,10 +248,11 @@ local function pending_tasks()
 end
 
 local function task_entry_maker(t)
-  local linear = t.linear or ""
+  local linear = jstr(t.linear)
   -- ⇢ = waits on other tasks (issue-task with local subtasks, or a
   -- project/milestone umbrella). Subtasks and plain tasks show no marker.
-  local waits = (t.depends and #t.depends > 0) and " ⇢ " or "   "
+  -- depends may be null (vim.NIL — truthy userdata), so check the type.
+  local waits = (type(t.depends) == "table" and #t.depends > 0) and " ⇢ " or "   "
   return {
     value = t,
     display = string.format("%4s %s%-10s %s", t.id, waits, linear, t.description),
@@ -271,10 +283,10 @@ local function task_picker(tasks, title)
         "",
         "task id:  " .. t.id,
         "uuid:     " .. t.uuid,
-        "project:  " .. (t.project or "-"),
-        "status:   " .. (t.status or "?"),
-        "linear:   " .. (t.linear or "-"),
-        "due:      " .. (t.due and t.due:sub(1, 8) or "-"),
+        "project:  " .. jstr(t.project, "-"),
+        "status:   " .. jstr(t.status, "?"),
+        "linear:   " .. jstr(t.linear, "-"),
+        "due:      " .. (type(t.due) == "string" and t.due:sub(1, 8) or "-"),
       }
       vim.api.nvim_buf_set_lines(self.state.bufnr, 0, -1, false, lines)
     end,
