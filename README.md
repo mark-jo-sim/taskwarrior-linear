@@ -174,6 +174,18 @@ In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to
 
 For AI agents: `here --json` + `here --notes` are the stable interface — a skill or CLAUDE.md line pointing at them gives any Bash-capable agent your task context.
 
+### Taskwarrior contexts
+
+```
+taskwarrior_linear context VOIP-5914                    # issue + its subtasks
+taskwarrior_linear context 12                           # milestone + its issues + subtasks
+taskwarrior_linear context VOIP.asr-some-project-slug   # project (prefix-matches children)
+taskwarrior_linear context none                         # clear
+taskwarrior_linear context list
+```
+
+Sets a native taskwarrior context (read-only — new tasks are not auto-tagged), so `task`, `taskwarrior-tui`, and reports all narrow to that scope. Subtasks inherit their parent's project on creation, which is what lets project contexts cover them.
+
 ### Taskwarrior filters
 
 The UDAs are plain Taskwarrior filters:

@@ -714,6 +714,10 @@ def cmd_sub(args):
     add = ["add", desc]
     if ident:
         add.append(f"linear:{ident}")
+    if parent.get("project"):
+        # inherit the parent's project so `project:` filters/contexts cover
+        # subtasks too
+        add.append(f"project:{parent['project']}")
     out = task(*add)
     m = re.search(r"Created task (\d+)\.", out)
     if not m:
@@ -1098,6 +1102,47 @@ def cmd_map(args):
     print(f"  {WORKDIRS_FILE}")
 
 
+def context_filter(kind, key):
+    """(filter, context-name) for a resolved map ref. Contexts are read-only
+    (no write filter — new tasks are not auto-tagged)."""
+    if kind == "project":
+        # TW `project:` filters prefix-match dotted children (VOIP matches
+        # VOIP.asr-...), and subtasks inherit their parent's project
+        return f"project:{key}", key.lower().replace(".", "-")
+    if ISSUE_RE.match(key):
+        # issue-task + its local subtasks share the linear UDA
+        return f"linear:{key}", key.lower()
+    # milestone uuid: umbrella + its issue-tasks (+ their subtasks, which
+    # share the issues' linear UDA)
+    pending = tw_json("status:pending")
+    umbrella = next((t for t in pending if t.get("linearmilestone") == key), None)
+    parts = [f"linearmilestone:{key}"]
+    if umbrella:
+        for u in umbrella.get("depends") or []:
+            t = next((x for x in pending if x["uuid"] == u), None)
+            if t and t.get("linear"):
+                parts.append(f"linear:{t['linear']}")
+    return " or ".join(parts), "ms-" + key[:8]
+
+
+def cmd_context(args):
+    if args.ref == "none":
+        task("context", "none")
+        print("taskwarrior context cleared")
+        return
+    if args.ref == "list":
+        print(task("context", "list"))
+        return
+    kind, key = resolve_map_ref(args.ref)
+    filt, name = context_filter(kind, key)
+    task("config", f"context.{name}.read", filt)
+    task("context", name)
+    n = task("count").strip().splitlines()[-1]
+    print(f"context '{name}' active — {n} visible")
+    print(f"  filter: {filt}")
+    print("  clear with: taskwarrior_linear context none")
+
+
 def cmd_here(args):
     cwd = args.dir or os.getcwd()
     tasks = here_tasks(cwd)
@@ -1246,6 +1291,15 @@ def main():
     sp.add_argument("--remove", action="store_true",
                     help="remove the dir instead of adding it")
     sp.set_defaults(fn=cmd_map)
+
+    sp = sub.add_parser(
+        "context",
+        help="set the taskwarrior context to a project/issue/milestone + children"
+    )
+    sp.add_argument("ref",
+                    help="issue ident, task id/uuid, milestone prefix, TW "
+                         "project key — or 'none' to clear, 'list' to show")
+    sp.set_defaults(fn=cmd_context)
 
     args = p.parse_args()
     args.fn(args)
