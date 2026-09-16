@@ -1102,16 +1102,17 @@ def cmd_map(args):
     cfg = load_workdirs()
     kind, key = resolve_map_ref(args.ref)
     entry = cfg[kind].setdefault(key, {"dirs": []})
+    dirpath = os.path.abspath(args.directory)
     if args.remove:
-        entry["dirs"] = [d for d in entry["dirs"] if d != args.directory]
+        entry["dirs"] = [d for d in entry["dirs"] if d != dirpath]
         if not entry["dirs"]:
             del cfg[kind][key]
-        print(f'unmapped {kind}."{key}": {args.directory}')
+        print(f'unmapped {kind}."{key}": {dirpath}')
     else:
-        if args.directory not in entry["dirs"]:
-            entry["dirs"].append(args.directory)
+        if dirpath not in entry["dirs"]:
+            entry["dirs"].append(dirpath)
         print(
-            f'mapped {kind}."{key}": {[args.directory] + [d for d in entry["dirs"] if d != args.directory]}'
+            f'mapped {kind}."{key}": {[dirpath] + [d for d in entry["dirs"] if d != dirpath]}'
         )
     save_workdirs(cfg)
     print(f"  {WORKDIRS_FILE}")
