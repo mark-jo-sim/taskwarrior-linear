@@ -14,7 +14,7 @@ Bridge [Linear](https://linear.app) into [Taskwarrior](https://taskwarrior.org) 
 ## How it links
 
 - Every task tied to a Linear issue carries a Taskwarrior UDA `linear` (the issue identifier, e.g. `ENG-123`), whether it's the issue itself or a local-only subtask.
-- The issue-task is the root (no `depends`); subtasks carry the same UDA and `depends:` on it. **Subtasks are never pushed to Linear** — break big issues down without cluttering the tracker.
+- The issue-task `depends:` on its local subtasks — the issue stays blocked until its parts are done, the same model the umbrellas use. Subtasks carry the same UDA but no `depends` of their own. **Subtasks are never pushed to Linear** — break big issues down without cluttering the tracker.
 - A Linear project imports as an umbrella task (`[project] name`, UDA `linearproject`) that `depends:` on its issue-tasks and milestone umbrellas. Issues also get Taskwarrior's dotted project hierarchy (`TEAMKEY.project-slug`).
 - A Linear milestone imports as an umbrella task (`[milestone] name`, UDA `linearmilestone`) blocked on its issue-tasks. Umbrellas stay pending until their issues are done — an honest "not finished yet" signal.
 - Completing an issue-task (`done`) also moves the Linear issue to Done. Umbrella completions never write back to Linear.

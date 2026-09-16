@@ -236,10 +236,12 @@ end
 
 local function task_entry_maker(t)
   local linear = t.linear or ""
-  local sub = (t.depends and #t.depends > 0) and "  ⤷ " or "  "
+  -- ⇢ = waits on other tasks (issue-task with local subtasks, or a
+  -- project/milestone umbrella). Subtasks and plain tasks show no marker.
+  local waits = (t.depends and #t.depends > 0) and " ⇢ " or "   "
   return {
     value = t,
-    display = string.format("%4s %s%-10s %s", t.id, sub, linear, t.description),
+    display = string.format("%4s %s%-10s %s", t.id, waits, linear, t.description),
     ordinal = string.format("%s %s %s", t.id, linear, t.description),
   }
 end

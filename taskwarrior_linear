@@ -4,8 +4,10 @@
 Linking model:
   - Every task tied to a Linear issue carries UDA `linear` = issue identifier
     (e.g. ENG-123), whether it is the issue-task itself or a local-only subtask.
-  - The issue-task is the root: no `depends`. Subtasks carry the same UDA and
-    `depends:` on the issue-task. Subtasks are never pushed to Linear.
+  - The issue-task `depends:` on its local subtasks — the issue reads as
+    blocked until its parts are done (same model as the umbrellas below).
+    Subtasks carry the same UDA but no `depends` of their own. Subtasks are
+    never pushed to Linear.
   - Linear projects map onto taskwarrior's dotted project hierarchy
     (TEAMKEY.project-name-slug) on every imported issue-task, and each project
     also imports as an umbrella task (`[project] name`, UDA `linearproject` =
@@ -53,13 +55,24 @@ def api_key():
     if KEY_FILE.exists():
         return KEY_FILE.read_text().strip()
     r = subprocess.run(
-        ["security", "find-generic-password", "-a", os.environ.get("USER", ""),
-         "-s", "taskwarrior_linear", "-w"],
-        capture_output=True, text=True)
+        [
+            "security",
+            "find-generic-password",
+            "-a",
+            os.environ.get("USER", ""),
+            "-s",
+            "taskwarrior_linear",
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+    )
     if r.returncode == 0 and r.stdout.strip():
         return r.stdout.strip()
-    die("no Linear API key — macOS Keychain entry 'taskwarrior_linear' not found; "
-        "add with: security add-generic-password -a $USER -s taskwarrior_linear -w")
+    die(
+        "no Linear API key — macOS Keychain entry 'taskwarrior_linear' not found; "
+        "add with: security add-generic-password -a $USER -s taskwarrior_linear -w"
+    )
 
 
 def gql(query, variables=None):
@@ -84,9 +97,11 @@ def gql(query, variables=None):
 # --------------------------------------------------------------------------
 # Taskwarrior helpers
 
+
 def task(*args, check=True):
-    r = subprocess.run(["task", "rc.confirmation=off", *args],
-                       capture_output=True, text=True)
+    r = subprocess.run(
+        ["task", "rc.confirmation=off", *args], capture_output=True, text=True
+    )
     if check and r.returncode != 0:
         die(f"task {' '.join(args)} failed: {r.stderr.strip()}")
     return r.stdout
@@ -101,7 +116,9 @@ def resolve(ref):
     if ISSUE_RE.match(ref):
         t = root_issue_task(ref)
         if not t:
-            die(f"no pending task with linear:{ref} — run `taskwarrior_linear import {ref}` first")
+            die(
+                f"no pending task with linear:{ref} — run `taskwarrior_linear import {ref}` first"
+            )
         return t
     if re.fullmatch(r"\d+", ref):
         ts = tw_json(f"id:{ref}")
@@ -115,18 +132,40 @@ def resolve(ref):
 
 
 def root_issue_task(ident):
-    """Pending task for a Linear issue that is the issue itself (no depends)."""
+    """Pending task for a Linear issue that is the issue itself.
+
+    The issue-task depends on its subtasks; subtasks are depended on by the
+    issue-task (umbrellas depend on the issue-task too, but carry no `linear`
+    UDA, so they never appear here). Root = the linear:IDENT task whose uuid
+    no other linear:IDENT task has in its depends.
+    """
     ts = tw_json("status:pending", f"linear:{ident}")
-    roots = [t for t in ts if not t.get("depends")]
-    return roots[0] if roots else (ts[0] if ts else None)
+    if not ts:
+        return None
+    dep_uuids = {u for t in ts for u in (t.get("depends") or [])}
+    roots = [t for t in ts if t["uuid"] not in dep_uuids]
+    return roots[0] if roots else ts[0]
 
 
 def subtasks_of(parent):
-    """Pending tasks that depend on parent (works for issue-tasks, milestones,
-    and plain tasks alike — matched by uuid across all pending)."""
-    uuid = parent.get("uuid")
-    return [t for t in tw_json("status:pending")
-            if uuid in (t.get("depends") or [])]
+    """Tasks parent blocks on: its depends uuids resolved. For an issue-task
+    these are its local subtasks; for a project/milestone umbrella its
+    issue-tasks and nested umbrellas."""
+    deps = set(parent.get("depends") or [])
+    return [t for t in tw_json("status:pending") if t["uuid"] in deps]
+
+
+def is_subtask(t):
+    """True if t is a local subtask: another pending task with the same
+    linear identifier depends on it."""
+    ident = t.get("linear")
+    if not ident:
+        return False
+    return any(
+        t["uuid"] in (o.get("depends") or [])
+        for o in tw_json("status:pending", f"linear:{ident}")
+        if o["uuid"] != t["uuid"]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -208,7 +247,8 @@ def fetch_projects(search=None, lead=None):
     # No issue nodes in the listing — fetching 100 projects × their issues
     # blows Linear's query complexity limit (>10000). `scope` = issue count,
     # `progress` = fraction done. Filtering by keyword/lead runs server-side.
-    data = gql("""
+    data = gql(
+        """
         query($pfilt: ProjectFilter) {
             projects(filter: $pfilt, first: 100, orderBy: updatedAt) {
                 nodes {
@@ -218,13 +258,19 @@ def fetch_projects(search=None, lead=None):
                 }
             }
         }
-    """, {"pfilt": project_filter(search, lead)})
-    return [p for p in data["projects"]["nodes"]
-            if p["state"] not in ("completed", "canceled")]
+    """,
+        {"pfilt": project_filter(search, lead)},
+    )
+    return [
+        p
+        for p in data["projects"]["nodes"]
+        if p["state"] not in ("completed", "canceled")
+    ]
 
 
 def fetch_project_by_slug(slug_id, only_mine=True):
-    data = gql("""
+    data = gql(
+        """
         query($id: String!, $ifilt: IssueFilter) {
             project(id: $id) {
                 id name slugId url state progress targetDate
@@ -239,7 +285,9 @@ def fetch_project_by_slug(slug_id, only_mine=True):
                 }
             }
         }
-    """, {"id": slug_id, "ifilt": MINE_FILTER if only_mine else None})
+    """,
+        {"id": slug_id, "ifilt": MINE_FILTER if only_mine else None},
+    )
     p = data.get("project")
     if not p:
         die(f"Linear project not found: {slug_id}")
@@ -259,12 +307,16 @@ def fetch_milestones():
             }
         }
     """)
-    return [m for m in data["projectMilestones"]["nodes"]
-            if m["status"] not in ("completed", "canceled")]
+    return [
+        m
+        for m in data["projectMilestones"]["nodes"]
+        if m["status"] not in ("completed", "canceled")
+    ]
 
 
 def fetch_milestone_by_id(ms_id, only_mine=True):
-    data = gql("""
+    data = gql(
+        """
         query($id: String!, $ifilt: IssueFilter) {
             projectMilestone(id: $id) {
                 id name status progress targetDate
@@ -279,7 +331,9 @@ def fetch_milestone_by_id(ms_id, only_mine=True):
                 }
             }
         }
-    """, {"id": ms_id, "ifilt": MINE_FILTER if only_mine else None})
+    """,
+        {"id": ms_id, "ifilt": MINE_FILTER if only_mine else None},
+    )
     m = data.get("projectMilestone")
     if not m:
         die(f"Linear milestone not found: {ms_id}")
@@ -303,6 +357,7 @@ def tw_project_for(issue_or_project, team_key):
 # --------------------------------------------------------------------------
 # Notes
 
+
 def slugify(text, limit=48):
     slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")
     return slug[:limit].rstrip("-") or "untitled"
@@ -319,9 +374,18 @@ def have_api_key():
     if os.environ.get("LINEAR_API_KEY") or KEY_FILE.exists():
         return True
     r = subprocess.run(
-        ["security", "find-generic-password", "-a", os.environ.get("USER", ""),
-         "-s", "taskwarrior_linear", "-w"],
-        capture_output=True, text=True)
+        [
+            "security",
+            "find-generic-password",
+            "-a",
+            os.environ.get("USER", ""),
+            "-s",
+            "taskwarrior_linear",
+            "-w",
+        ],
+        capture_output=True,
+        text=True,
+    )
     return r.returncode == 0 and bool(r.stdout.strip())
 
 
@@ -373,6 +437,7 @@ def open_note(path):
 
 # --------------------------------------------------------------------------
 # Commands
+
 
 def cmd_issues(args):
     issues = my_issues()
@@ -438,44 +503,66 @@ def cmd_import(args):
     tid, _ = import_issue(issue)
     print(f"created task {tid}: {ident} {issue['title']}")
     print(f"  {issue['url']}")
-    print(f"  subtasks: taskwarrior_linear sub {ident} \"description\"")
+    print(f'  subtasks: taskwarrior_linear sub {ident} "description"')
 
 
 def cmd_projects(args):
     projects = fetch_projects(search=args.search, lead=args.lead)
     if args.json:
-        out = [{
-            "slugId": p["slugId"], "name": p["name"], "url": p["url"],
-            "state": p["state"], "progress": p["progress"],
-            "targetDate": p.get("targetDate"), "scope": p.get("scope"),
-            "lead": (p.get("lead") or {}).get("name"),
-        } for p in projects]
+        out = [
+            {
+                "slugId": p["slugId"],
+                "name": p["name"],
+                "url": p["url"],
+                "state": p["state"],
+                "progress": p["progress"],
+                "targetDate": p.get("targetDate"),
+                "scope": p.get("scope"),
+                "lead": (p.get("lead") or {}).get("name"),
+            }
+            for p in projects
+        ]
         print(json.dumps(out, indent=2))
         return
     if not projects:
-        print("no open Linear projects"
-              + (f" matching --search '{args.search}'" if args.search else "")
-              + (f" --lead '{args.lead}'" if args.lead else ""))
+        print(
+            "no open Linear projects"
+            + (f" matching --search '{args.search}'" if args.search else "")
+            + (f" --lead '{args.lead}'" if args.lead else "")
+        )
         return
     for p in projects:
         due = (p.get("targetDate") or "")[:10] or "          "
         teams = ",".join(t["key"] for t in p["teams"]["nodes"])
         lead = (p.get("lead") or {}).get("name") or "-"
-        print(f"{p['slugId']}  {p['state']:<8} {due}  [{teams}]  "
-              f"{p['progress']:.0%} of {p.get('scope', 0)}  {p['name']}  · {lead}")
-    print("\nimport with: taskwarrior_linear import-project <SLUGID>  "
-          "(add --all for every open issue, not just yours)")
+        print(
+            f"{p['slugId']}  {p['state']:<8} {due}  [{teams}]  "
+            f"{p['progress']:.0%} of {p.get('scope', 0)}  {p['name']}  · {lead}"
+        )
+    print(
+        "\nimport with: taskwarrior_linear import-project <SLUGID>  "
+        "(add --all for every open issue, not just yours)"
+    )
 
 
 def cmd_milestones(args):
     milestones = fetch_milestones()
     if args.json:
-        out = [{
-            "id": m["id"], "name": m["name"], "status": m["status"],
-            "progress": m["progress"], "targetDate": m.get("targetDate"),
-            "url": milestone_url(m),
-            "project": {"slugId": m["project"]["slugId"], "name": m["project"]["name"]},
-        } for m in milestones]
+        out = [
+            {
+                "id": m["id"],
+                "name": m["name"],
+                "status": m["status"],
+                "progress": m["progress"],
+                "targetDate": m.get("targetDate"),
+                "url": milestone_url(m),
+                "project": {
+                    "slugId": m["project"]["slugId"],
+                    "name": m["project"]["name"],
+                },
+            }
+            for m in milestones
+        ]
         print(json.dumps(out, indent=2))
         return
     if not milestones:
@@ -484,10 +571,14 @@ def cmd_milestones(args):
     for m in milestones:
         due = (m.get("targetDate") or "")[:10] or "          "
         p = m["project"]
-        print(f"{m['id'][:8]}  {m['status']:<10} {due}  "
-              f"{min(m['progress'], 1.0):.0%}  {p['name']} — {m['name']}")
-    print("\nimport with: taskwarrior_linear import-milestone <ID>  "
-          "(add --all for every open issue, not just yours)")
+        print(
+            f"{m['id'][:8]}  {m['status']:<10} {due}  "
+            f"{min(m['progress'], 1.0):.0%}  {p['name']} — {m['name']}"
+        )
+    print(
+        "\nimport with: taskwarrior_linear import-milestone <ID>  "
+        "(add --all for every open issue, not just yours)"
+    )
 
 
 def cmd_import_project(args):
@@ -506,17 +597,25 @@ def cmd_import_project(args):
         issue_ids.append(tid)
     # Umbrella task for the project itself: blocked on its issue-tasks and on
     # any milestone umbrellas already imported for the same project.
-    ms_ids = [t["id"] for t in tw_json("status:pending")
-              if t.get("linearproject") == p["slugId"] and t.get("linearmilestone")]
+    ms_ids = [
+        t["id"]
+        for t in tw_json("status:pending")
+        if t.get("linearproject") == p["slugId"] and t.get("linearmilestone")
+    ]
     deps = [str(i) for i in issue_ids + ms_ids]
     team_key = next((t["key"] for t in p["teams"]["nodes"]), None)
-    existing = [t for t in tw_json("status:pending", f"linearproject:{p['slugId']}")
-                if not t.get("linearmilestone")]
+    existing = [
+        t
+        for t in tw_json("status:pending", f"linearproject:{p['slugId']}")
+        if not t.get("linearmilestone")
+    ]
     if existing:
         umbrella = existing[0]
         count = add_deps(umbrella, [int(i) for i in issue_ids] + ms_ids)
-        print(f"\n[project] {p['name']} — umbrella task {umbrella['id']} "
-              f"now blocks on {count} tasks")
+        print(
+            f"\n[project] {p['name']} — umbrella task {umbrella['id']} "
+            f"now blocks on {count} tasks"
+        )
     else:
         add = ["add", f"[project] {p['name']}", f"linearproject:{p['slugId']}"]
         twproj = tw_project_for({"project": {"name": p["name"]}}, team_key)
@@ -530,10 +629,13 @@ def cmd_import_project(args):
         m = re.search(r"Created task (\d+)\.", out)
         pid = m.group(1) if m else "?"
         task(pid, "annotate", p["url"])
-        print(f"\ncreated task {pid}: [project] {p['name']} "
-              f"(blocks on {len(deps)} tasks)")
-    print(f"  {created} created, {skipped} already present "
-          f"({len(open_issues)} open{' assigned to you' if not args.all else ''})")
+        print(
+            f"\ncreated task {pid}: [project] {p['name']} (blocks on {len(deps)} tasks)"
+        )
+    print(
+        f"  {created} created, {skipped} already present "
+        f"({len(open_issues)} open{' assigned to you' if not args.all else ''})"
+    )
     print(f"  {p['url']}")
 
 
@@ -549,8 +651,10 @@ def cmd_import_milestone(args):
     m = fetch_milestone_by_id(ms_id, only_mine=not args.all)
     open_issues = open_issue_nodes(m["issues"]["nodes"])
     if not open_issues:
-        die(f"no open {'assigned ' if not args.all else ''}issues in milestone "
-            f"{m['name']}")
+        die(
+            f"no open {'assigned ' if not args.all else ''}issues in milestone "
+            f"{m['name']}"
+        )
     issue_ids = []
     for issue in open_issues:
         tid, was_created = import_issue(issue)
@@ -567,8 +671,12 @@ def cmd_import_milestone(args):
     else:
         p = m["project"]
         team_key = next((t["key"] for t in p["teams"]["nodes"]), None)
-        add = ["add", f"[milestone] {m['name']}",
-               f"linearmilestone:{m['id']}", f"linearproject:{p['slugId']}"]
+        add = [
+            "add",
+            f"[milestone] {m['name']}",
+            f"linearmilestone:{m['id']}",
+            f"linearproject:{p['slugId']}",
+        ]
         twproj = tw_project_for({"project": p}, team_key)
         if twproj:
             add.append(f"project:{twproj}")
@@ -580,12 +688,16 @@ def cmd_import_milestone(args):
         mid = re.search(r"Created task (\d+)\.", out)
         umbrella_id = mid.group(1) if mid else "?"
         task(umbrella_id, "annotate", milestone_url(m))
-        print(f"\ncreated task {umbrella_id}: [milestone] {m['name']} "
-              f"(depends on {len(issue_ids)} issue-tasks)")
+        print(
+            f"\ncreated task {umbrella_id}: [milestone] {m['name']} "
+            f"(depends on {len(issue_ids)} issue-tasks)"
+        )
     # If the project umbrella exists, the milestone now blocks it too.
-    proj_umbrella = [t for t in tw_json("status:pending",
-                                        f"linearproject:{m['project']['slugId']}")
-                     if not t.get("linearmilestone")]
+    proj_umbrella = [
+        t
+        for t in tw_json("status:pending", f"linearproject:{m['project']['slugId']}")
+        if not t.get("linearmilestone")
+    ]
     if proj_umbrella:
         add_deps(proj_umbrella[0], [int(umbrella_id)])
     print(f"  {milestone_url(m)}")
@@ -595,20 +707,21 @@ def cmd_sub(args):
     if not args.description:
         die("subtask description required")
     desc = " ".join(args.description)
-    if ISSUE_RE.match(args.ref):
-        parent = resolve(args.ref)
-        ident = args.ref
-    else:
-        parent = resolve(args.ref)
-        ident = parent.get("linear")
-    add = ["add", desc, f"depends:{parent['id']}"]
+    parent = resolve(args.ref)
+    ident = parent.get("linear") or (args.ref if ISSUE_RE.match(args.ref) else None)
+    add = ["add", desc]
     if ident:
         add.append(f"linear:{ident}")
     out = task(*add)
     m = re.search(r"Created task (\d+)\.", out)
-    tid = m.group(1) if m else "?"
+    if not m:
+        die(f"unexpected task output: {out.strip()}")
+    tid = int(m.group(1))
+    # parent blocks on the subtask: the issue isn't done until its parts are
+    add_deps(parent, [tid])
     where = f"linear:{ident}" if ident else "no issue (plain subtask)"
     print(f"created local subtask {tid}: {desc}  [{where}]")
+    print(f"  task {parent['id']} now blocks on it")
 
 
 def cmd_note(args):
@@ -674,34 +787,32 @@ def cmd_show(args):
         m = fetch_milestone_by_id(ms_id, only_mine=False)
         p = m["project"]
         print(f"\nmilestone {m['name']}  —  {p['name']}")
-        print(f"  status:   {m['status']}  progress {min(m.get('progress', 0), 1.0):.0%}")
+        print(
+            f"  status:   {m['status']}  progress {min(m.get('progress', 0), 1.0):.0%}"
+        )
         if m.get("targetDate"):
             print(f"  target:   {m['targetDate'][:10]}")
         print(f"  url:      {milestone_url(m)}")
     elif proj_id:
         pr = fetch_project_by_slug(proj_id, only_mine=False)
         print(f"\nproject {pr['name']}")
-        print(f"  state:    {pr['state']}  progress {pr.get('progress', 0):.0%} "
-              f"of {pr.get('scope', 0)}")
+        print(
+            f"  state:    {pr['state']}  progress {pr.get('progress', 0):.0%} "
+            f"of {pr.get('scope', 0)}"
+        )
         if pr.get("targetDate"):
             print(f"  target:   {pr['targetDate'][:10]}")
         print(f"  url:      {pr['url']}")
-    # umbrellas depend ON their issue-tasks / milestone umbrellas — resolve
-    # those uuids for display
-    if t.get("depends") and (ms_id or proj_id):
-        deps = [d for d in tw_json("status:pending") if d["uuid"] in t["depends"]]
-        if deps:
-            print("\nblocks on:")
-            for d in deps:
-                print(f"  {d['id']}: {d['description']}  [{d['status']}]")
+    # what this task blocks on: its local subtasks (issue-task) or its
+    # issue-tasks and nested umbrellas (project/milestone umbrella)
     subs = subtasks_of(t)
     if subs:
-        label = "issue-tasks" if ms_id else "local subtasks"
+        label = "local subtasks" if ident and not (ms_id or proj_id) else "blocks on"
         print(f"\n{label}:")
         for s in subs:
             print(f"  {s['id']}: {s['description']}  [{s['status']}]")
-    if ident and not t.get("depends"):
-        print(f"\nadd subtask:  taskwarrior_linear sub {ident} \"description\"")
+    if ident and not is_subtask(t):
+        print(f'\nadd subtask:  taskwarrior_linear sub {ident} "description"')
         print(f"open issue:   taskwarrior_linear open {ident}")
 
 
@@ -714,14 +825,16 @@ def cmd_done(args):
         if t.get("linearmilestone") or t.get("linearproject"):
             print("umbrella task — Linear project/milestone status untouched")
         return
-    if t.get("depends"):
-        print(f"subtask of {ident} — Linear untouched")
+    if is_subtask(t):
+        print(f"local subtask of {ident} — Linear untouched")
         return
     issue = fetch_issue(ident)
     states = issue["team"]["states"]["nodes"]
     if not states:
-        print(f"warning: no completed state found for team {issue['team']['key']}, "
-              f"move {ident} to Done manually")
+        print(
+            f"warning: no completed state found for team {issue['team']['key']}, "
+            f"move {ident} to Done manually"
+        )
         return
     state = states[-1]  # pick final completed state if team has several
     gql(
@@ -734,10 +847,13 @@ def cmd_done(args):
 
 # --------------------------------------------------------------------------
 
+
 def main():
-    p = argparse.ArgumentParser(prog="taskwarrior_linear",
-                                description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        prog="taskwarrior_linear",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sp = sub.add_parser("issues", help="list my open Linear issues")
@@ -758,29 +874,46 @@ def main():
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_milestones)
 
-    sp = sub.add_parser("import-project",
-                        help="import all open issues of a Linear project")
+    sp = sub.add_parser(
+        "import-project", help="import all open issues of a Linear project"
+    )
     sp.add_argument("slug", help="Linear project slugId (see `projects`)")
-    sp.add_argument("--all", action="store_true",
-                    help="import every open issue, not just ones assigned to you")
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="import every open issue, not just ones assigned to you",
+    )
     sp.set_defaults(fn=cmd_import_project)
 
-    sp = sub.add_parser("import-milestone",
-                        help="import a milestone as an umbrella task plus its open issues")
-    sp.add_argument("milestone", help="milestone uuid or its 8-char prefix (see `milestones`)")
-    sp.add_argument("--all", action="store_true",
-                    help="import every open issue, not just ones assigned to you")
+    sp = sub.add_parser(
+        "import-milestone",
+        help="import a milestone as an umbrella task plus its open issues",
+    )
+    sp.add_argument(
+        "milestone", help="milestone uuid or its 8-char prefix (see `milestones`)"
+    )
+    sp.add_argument(
+        "--all",
+        action="store_true",
+        help="import every open issue, not just ones assigned to you",
+    )
     sp.set_defaults(fn=cmd_import_milestone)
 
-    sp = sub.add_parser("sub", help="create a local-only subtask of a Linear issue task")
+    sp = sub.add_parser(
+        "sub", help="create a local-only subtask of a Linear issue task"
+    )
     sp.add_argument("ref", help="Linear identifier or taskwarrior task id")
     sp.add_argument("description", nargs="+", help="subtask description")
     sp.set_defaults(fn=cmd_sub)
 
     sp = sub.add_parser("note", help="create/open the Obsidian note for a task")
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
-    sp.add_argument("--print", dest="print_only", action="store_true",
-                    help="print the note path instead of opening it")
+    sp.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="print the note path instead of opening it",
+    )
     sp.set_defaults(fn=cmd_note)
 
     sp = sub.add_parser("open", help="open the Linear issue (or note) for a task")
@@ -791,7 +924,9 @@ def main():
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_show)
 
-    sp = sub.add_parser("done", help="complete a task; issue-tasks also close in Linear")
+    sp = sub.add_parser(
+        "done", help="complete a task; issue-tasks also close in Linear"
+    )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_done)
 
