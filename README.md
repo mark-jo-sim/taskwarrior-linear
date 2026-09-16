@@ -172,7 +172,13 @@ taskwarrior_linear map <ref> <dir> [--remove]
 
 In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to the current directory; `<CR>` opens the note, `<C-o>` opens Linear.
 
-For AI agents: `here --json` + `here --notes` are the stable interface. The repo ships an installable Claude Code skill (`skills/tw`, linked to `~/.claude/skills/tw` by `install.sh`, invocable as `/tw`) that pulls task + note context for a directory or a named project/issue/milestone scope — including careful use of `context` (global taskwarrior state) and the confirm-before-`done` rule.
+For AI agents: `here --json` + `here --notes` are the stable interface. The repo ships three installable Claude Code skills (linked into `~/.claude/skills` by `install.sh`):
+
+- `/tw` — task + note context for a directory or a named project/issue/milestone scope; careful use of `context` (global taskwarrior state) and confirm-before-`done`
+- `/tw-start` — morning briefing: open Linear issues, `+active` tasks, notes' `## Next steps` sections; drafts EOD goals with the user into `EOD-<date>.md` in the notes dir (git-synced)
+- `/tw-eod` — end-of-day review over a **rolling 24h window** (timezone-safe): changed tasks and notes, progress against the EOD goals, carried-over misses
+
+Conventions the daily skills rely on: tag in-flight tasks with `+active` (`task <id> modify +active`), and keep a `## Next steps` section in task notes.
 
 ### Taskwarrior contexts
 

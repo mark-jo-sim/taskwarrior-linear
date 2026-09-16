@@ -31,7 +31,10 @@ link "$REPO/lua/taskwarrior_linear.lua" "$NVIM_LUA_DIR/taskwarrior_linear.lua"
 
 SKILLS_DIR="${HOME}/.claude/skills"
 mkdir -p "$SKILLS_DIR"
-link "$REPO/skills/tw" "$SKILLS_DIR/tw"
+for skill in "$REPO"/skills/*; do
+  [ -d "$skill" ] || continue
+  link "$skill" "$SKILLS_DIR/$(basename "$skill")"
+done
 
 cat <<'EOF'
 
@@ -60,8 +63,13 @@ Done. Remaining manual steps:
 
     export TWL_VAULT=/path/to/notes-dir
 
-5. Installed agent skill: ~/.claude/skills/tw (invocable as /tw in Claude
-   Code) — pulls task + note context for a directory or project scope.
+5. Installed agent skills (~/.claude/skills, invocable as /tw, /tw-start,
+   /tw-eod in Claude Code):
+   - tw — task + note context for a directory or project scope
+   - tw-start — morning briefing: open issues, active tasks, Next steps;
+     drafts EOD goals with the user
+   - tw-eod — rolling-24h review of task/note changes; progress against
+     the EOD goals
 
 Verify with:
 
