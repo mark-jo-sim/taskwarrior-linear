@@ -175,8 +175,17 @@ In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to
 For AI agents: `here --json` + `here --notes` are the stable interface. The repo ships three installable Claude Code skills (linked into `~/.claude/skills` by `install.sh`):
 
 - `/tw` — task + note context for a directory or a named project/issue/milestone scope; careful use of `context` (global taskwarrior state) and confirm-before-`done`
-- `/tw-start` — morning briefing: open Linear issues, `+active` tasks, notes' `## Next steps` sections; drafts EOD goals with the user into `EOD-<date>.md` in the notes dir (git-synced)
-- `/tw-eod` — end-of-day review over a **rolling 24h window** (timezone-safe): changed tasks and notes, progress against the EOD goals, carried-over misses
+- `/tw-start` — morning briefing built on `taskwarrior_linear sod`: open Linear issues, `+active` tasks, notes' `## Next steps` sections; drafts EOD goals with the user into `EOD-<date>.md` in the journals dir (`<vault>/journals`, override `TWL_JOURNALS_DIR`)
+- `/tw-eod` — end-of-day review built on `taskwarrior_linear eod`: **rolling 24h window** (timezone-safe) of finished/added/changed tasks and edited notes, then progress against the EOD goals, carried-over misses
+
+Both commands are deterministic and usable directly — the skills add the conversational parts (briefing, goal drafting, verdicts):
+
+```
+taskwarrior_linear sod [--json]   # +active tasks + their Next steps, all Next-steps notes, due/overdue
+taskwarrior_linear eod [--json]   # finished/added/changed/removed tasks + edited notes + latest journal
+```
+
+Note: the journals dir sits beside the notes dir in the vault and is not part of the notes git repo that `sync` pushes — sync it separately if you want goals on both machines.
 
 Conventions the daily skills rely on: tag in-flight tasks with `+active` (`task <id> modify +active`), and keep a `## Next steps` section in task notes.
 

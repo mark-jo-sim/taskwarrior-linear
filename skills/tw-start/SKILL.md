@@ -1,33 +1,30 @@
 ---
 name: tw-start
-description: Start the workday — gather open Linear issues, active (+active) tasks, and their notes' "## Next steps" sections, brief the user, then draft end-of-day goals together. Trigger on "start the day", "morning routine", "what should I work on today", "draft EOD goals"
+description: Start the workday — run the sod briefing (open Linear issues, +active tasks, notes' "## Next steps"), then draft end-of-day goals with the user into the journals dir. Trigger on "start the day", "morning routine", "what should I work on today", "draft EOD goals"
 ---
 
 # Start of day
 
-Morning briefing + EOD goal drafting. Notes live in `~/obsidian/Tasks`
-(override: `$TWL_VAULT`) — one markdown file per issue/task.
-
-## Gather
+The deterministic gathering is one command:
 
 ```sh
-TWL_VAULT="${TWL_VAULT:-$HOME/obsidian/Tasks}"
-taskwarrior_linear issues              # my open Linear issues
-task status:pending +active            # tasks the user marked active
-grep -l '^## Next steps' "$TWL_VAULT"/*.md   # notes carrying next steps
-task status:pending due.before:tomorrow      # due today / overdue
+taskwarrior_linear sod           # or --json
 ```
 
-Read each matched note's `## Next steps` section (to the next heading or
-EOF). For active tasks with thin context, `taskwarrior_linear show <id>`.
+It returns: `+active` tasks (with each note's `## Next steps` section),
+every note carrying a `## Next steps` heading, and due-today/overdue tasks.
+Add open Linear issues with `taskwarrior_linear issues` when the user wants
+the full picture.
 
 ## Brief the user
 
-Summarize, don't dump:
+Summarize the sod output, don't dump it:
 
 - active tasks and their next steps — quote the concrete actions, not the headings
-- open issues not yet imported as tasks — suggest `import` for any the user wants to work
 - due-today / overdue work
+- open issues worth importing (suggest `import` only if the user wants to work them)
+- if nothing is `+active` or no notes have Next steps, say so and suggest the
+  conventions: `task <id> modify +active`, `## Next steps` section in notes
 
 ## Draft EOD goals
 
@@ -35,7 +32,8 @@ Summarize, don't dump:
   checkable ("annotate 20 prod conversations"), not vague ("make progress
   on dataset")
 - Iterate with the user until they accept the set — goals are theirs
-- Write to `"$TWL_VAULT/EOD-$(date +%F).md"` (local date):
+- Write to the journals dir (`$TWL_JOURNALS_DIR`, default `~/obsidian/journals`),
+  file `EOD-$(date +%F).md`:
 
 ```markdown
 ---
@@ -48,8 +46,7 @@ date: YYYY-MM-DD
 - [ ] second goal
 ```
 
-- If yesterday's `EOD-*.md` has missed or unchecked goals, ask whether to
-  carry them into today's list
-- Offer `taskwarrior_linear sync push` so goals reach the other machines
-
-To mark a task active for future mornings: `task <id> modify +active`.
+- If the newest existing `EOD-*.md` there has missed or unchecked goals, ask
+  whether to carry them into today's list (tw-eod marks them under
+  `## Carried over`)
+- Offer `taskwarrior_linear sync push` afterwards
