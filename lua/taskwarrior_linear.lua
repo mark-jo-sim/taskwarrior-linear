@@ -8,6 +8,8 @@
 --                       task + its issues; <C-o> opens in browser
 --   :TWTasks       — telescope picker over pending tasks
 --                    <CR> open task note          <C-o> open Linear issue (or note)
+--   :TWHere        — same picker, filtered to tasks whose work dirs
+--                    (workdirs.toml) cover the current directory
 --   :TWNote        — same as :TWTasks <CR>
 --   <leader>tt     — toggle taskwarrior-tui terminal
 
@@ -258,13 +260,7 @@ local function open_task_note(t)
   vim.cmd.edit(vim.fn.fnameescape(path))
 end
 
-function M.tw_tasks()
-  local tasks = pending_tasks()
-  if #tasks == 0 then
-    vim.notify("no pending taskwarrior tasks")
-    return
-  end
-
+local function task_picker(tasks, title)
   local previewers = require("telescope.previewers")
   local previewer = previewers.new_buffer_previewer({
     title = "Task",
@@ -285,7 +281,7 @@ function M.tw_tasks()
   })
 
   pick(tasks, {
-    title = "Taskwarrior — pending",
+    title = title,
     entry_maker = task_entry_maker,
     previewer = previewer,
     cr = function(prompt_bufnr)
@@ -301,6 +297,25 @@ function M.tw_tasks()
       end)
     end,
   })
+end
+
+function M.tw_tasks()
+  local tasks = pending_tasks()
+  if #tasks == 0 then
+    vim.notify("no pending taskwarrior tasks")
+    return
+  end
+  task_picker(tasks, "Taskwarrior — pending")
+end
+
+-- :TWHere — tasks whose work dirs (workdirs.toml) cover nvim's cwd
+function M.tw_here()
+  local tasks = json_run(CLI .. " here --json")
+  if #tasks == 0 then
+    vim.notify("no tasks mapped under " .. vim.fn.getcwd())
+    return
+  end
+  task_picker(tasks, "Tasks here — " .. vim.fn.getcwd())
 end
 
 function M.tw_note()
@@ -356,9 +371,11 @@ function M.setup(opts)
   end, { nargs = "?" })
   vim.api.nvim_create_user_command("LinearMilestones", M.linear_milestones, {})
   vim.api.nvim_create_user_command("TWTasks", M.tw_tasks, {})
+  vim.api.nvim_create_user_command("TWHere", M.tw_here, {})
   vim.api.nvim_create_user_command("TWNote", M.tw_note, {})
   vim.keymap.set("n", "<leader>tt", M.tui_toggle, { desc = "taskwarrior-tui" })
   vim.keymap.set("n", "<leader>tn", M.tw_tasks, { desc = "taskwarrior tasks" })
+  vim.keymap.set("n", "<leader>th", M.tw_here, { desc = "tasks for this directory" })
 end
 
 return M

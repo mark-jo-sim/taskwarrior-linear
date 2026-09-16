@@ -933,6 +933,119 @@ def cmd_sync(args):
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Work-directory mapping (cwd ↔ tasks)
+#
+# ~/.config/taskwarrior_linear/workdirs.toml:
+#
+#   [project."VOIP.asr-llm-driven-asr-error-detection"]
+#   dirs = ["~/projects/asr-eval"]
+#   [project."VOIP"]                       # team-level fallback
+#   dirs = ["~/projects/voip"]
+#   [task."VOIP-5914"]                     # per-issue dirs, added to project's
+#   dirs = ["~/projects/data-sampling"]
+#
+# Resolution per task (most specific first): `workdir` UDA on the task →
+# [task.IDENT] → [project.TEAM.slug] → [project.TEAM]. Subtasks inherit via
+# their root issue-task's project. A task matches a cwd when any resolved dir
+# is an ancestor of it (recursive).
+
+WORKDIRS_FILE = Path.home() / ".config" / "taskwarrior_linear" / "workdirs.toml"
+
+
+def load_workdirs():
+    if not WORKDIRS_FILE.exists():
+        return {"project": {}, "task": {}}
+    try:
+        import tomllib
+    except ImportError:
+        die(f"{WORKDIRS_FILE} requires Python 3.11+ (tomllib)")
+    with open(WORKDIRS_FILE, "rb") as f:
+        data = tomllib.load(f)
+    return {"project": data.get("project", {}), "task": data.get("task", {})}
+
+
+def expand_dir(d):
+    return Path(str(d)).expanduser().resolve()
+
+
+def dirs_for_task(t, project, cfg):
+    """Work dirs resolved for task t (project may be inherited for subtasks)."""
+    dirs = []
+    if t.get("workdir"):
+        dirs.append(expand_dir(t["workdir"]))
+    ident = t.get("linear")
+    if ident and ident in cfg["task"]:
+        dirs += [expand_dir(d) for d in cfg["task"][ident]["dirs"]]
+    if project:
+        if project in cfg["project"]:
+            dirs += [expand_dir(d) for d in cfg["project"][project]["dirs"]]
+        team = project.split(".")[0]
+        if team != project and team in cfg["project"]:
+            dirs += [expand_dir(d) for d in cfg["project"][team]["dirs"]]
+    seen, out = set(), []
+    for d in dirs:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def here_tasks(cwd):
+    """Pending tasks whose resolved work dirs cover cwd."""
+    cwd = expand_dir(cwd)
+    cfg = load_workdirs()
+    out = []
+    for t in tw_json("status:pending"):
+        project = t.get("project")
+        if not project and t.get("linear"):
+            root = root_issue_task(t["linear"])
+            project = (root or {}).get("project")
+        if any(cwd.is_relative_to(d) for d in dirs_for_task(t, project, cfg)):
+            t = dict(t)
+            t["_here_project"] = project
+            out.append(t)
+    return out
+
+
+def cmd_here(args):
+    cwd = args.dir or os.getcwd()
+    tasks = here_tasks(cwd)
+    if args.notes:
+        for t in tasks:
+            p = note_path_for(t)
+            if p.exists():
+                print(p)
+        return
+    if args.json:
+        out = []
+        for t in tasks:
+            p = note_path_for(t)
+            out.append({
+                "id": t["id"], "uuid": t["uuid"], "description": t["description"],
+                "status": t["status"], "linear": t.get("linear"),
+                "depends": t.get("depends"),
+                "project": t.get("_here_project"),
+                "note": str(p), "note_exists": p.exists(),
+            })
+        print(json.dumps(out, indent=2))
+        return
+    if not tasks:
+        print(f"no tasks mapped under {cwd}")
+        if not WORKDIRS_FILE.exists():
+            print(f"no config yet — create {WORKDIRS_FILE}, e.g.:")
+            print('  [project."VOIP"]\n  dirs = ["~/projects/voip"]')
+        return
+    for t in tasks:
+        ident = t.get("linear") or ("(project %s)" % t.get("_here_project") if
+                                    t.get("_here_project") else "")
+        sub = "  ⤷ " if is_subtask(t) else "    "
+        print(f"{t['id']:>4} {sub}{ident:<12} {t['description']}")
+    print(f"\n{len(tasks)} tasks under {cwd}")
+    print("open a note:   taskwarrior_linear note <id>")
+    print("agent context: taskwarrior_linear here --notes")
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="taskwarrior_linear",
@@ -1023,6 +1136,15 @@ def main():
         help="push: export + commit + push · pull: pull + import + mirror notes",
     )
     sp.set_defaults(fn=cmd_sync)
+
+    sp = sub.add_parser(
+        "here", help="list tasks whose work dirs cover the current directory"
+    )
+    sp.add_argument("--json", action="store_true", help="machine-readable output")
+    sp.add_argument("--notes", action="store_true",
+                    help="print resolved note paths that exist (agent context)")
+    sp.add_argument("--dir", help="use this directory instead of $PWD")
+    sp.set_defaults(fn=cmd_here)
 
     args = p.parse_args()
     args.fn(args)

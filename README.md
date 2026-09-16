@@ -142,6 +142,35 @@ Ordering matters: run `sync push` after working on a machine and `sync pull` bef
 15 9,17 * * *  taskwarrior_linear sync pull && taskwarrior_linear sync push
 ```
 
+### Work directories — tasks by where you are
+
+Map projects to the directories you work in (`~/.config/taskwarrior_linear/workdirs.toml`):
+
+```toml
+[project."VOIP.asr-llm-driven-asr-error-detection"]
+dirs = ["~/projects/asr-eval"]
+
+[project."VOIP"]                       # team-level fallback
+dirs = ["~/projects/voip"]
+
+[task."VOIP-5914"]                     # per-issue dirs, in addition to project's
+dirs = ["~/projects/data-sampling"]
+```
+
+Resolution per task, most specific first: a `workdir` UDA set on the task (`task 12 modify workdir:~/x`) → `[task.IDENT]` → `[project.TEAM.slug]` → `[project.TEAM]`. Subtasks inherit through their parent issue's project. A directory matches recursively — anything under a mapped dir counts.
+
+Then:
+
+```
+taskwarrior_linear here            # tasks relevant to $PWD
+taskwarrior_linear here --notes    # existing note paths only (agent context)
+taskwarrior_linear here --json     # machine-readable, includes note paths
+```
+
+In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to the current directory; `<CR>` opens the note, `<C-o>` opens Linear.
+
+For AI agents: `here --json` + `here --notes` are the stable interface — a skill or CLAUDE.md line pointing at them gives any Bash-capable agent your task context.
+
 ### Taskwarrior filters
 
 The UDAs are plain Taskwarrior filters:
