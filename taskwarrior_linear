@@ -1187,34 +1187,54 @@ def cmd_here(args):
     print("agent context: taskwarrior_linear here --notes")
 
 
+HELP_DESCRIPTION = """\
+bridge between Taskwarrior, Linear, and Obsidian notes — issues, projects,
+and milestones become tasks; local subtasks stay out of Linear; every task
+can carry a note. Runs entirely on your own infra: Linear's GraphQL API,
+taskwarrior, and a git repo you control.
+
+typical loop:
+  issues → import / import-project → sub "..." → note → done
+
+the linking model and setup live in the README; each command's flags in
+`taskwarrior_linear <command> --help`.
+"""
+
+
 def main():
     p = argparse.ArgumentParser(
         prog="taskwarrior_linear",
-        description=__doc__,
+        description=HELP_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("issues", help="list my open Linear issues")
+    sp = sub.add_parser("issues",
+                    help="list my open Linear issues (--json for scripts/pickers)")
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_issues)
 
-    sp = sub.add_parser("import", help="create a taskwarrior task from a Linear issue")
+    sp = sub.add_parser("import",
+                    help="import one Linear issue (e.g. ENG-123) as a task; idempotent")
     sp.add_argument("issue", help="Linear issue identifier, e.g. ENG-123")
     sp.set_defaults(fn=cmd_import)
 
-    sp = sub.add_parser("projects", help="list open Linear projects")
+    sp = sub.add_parser("projects",
+                    help="list open projects; --search NAME / --lead me filters server-side")
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.add_argument("--search", help="case-insensitive substring of project name")
     sp.add_argument("--lead", help="project lead (owner): name substring, or 'me'")
     sp.set_defaults(fn=cmd_projects)
 
-    sp = sub.add_parser("milestones", help="list open Linear milestones")
+    sp = sub.add_parser("milestones",
+                    help="list open milestones with their projects and targets")
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_milestones)
 
     sp = sub.add_parser(
-        "import-project", help="import all open issues of a Linear project"
+        "import-project",
+                    help="import a project: [project] umbrella task + its open issues "
+                         "(yours by default, --all for everyone's)"
     )
     sp.add_argument("slug", help="Linear project slugId (see `projects`)")
     sp.add_argument(
@@ -1226,7 +1246,8 @@ def main():
 
     sp = sub.add_parser(
         "import-milestone",
-        help="import a milestone as an umbrella task plus its open issues",
+        help="import a milestone: [milestone] umbrella blocked on its issue-tasks, "
+        "plus the issues themselves",
     )
     sp.add_argument(
         "milestone", help="milestone uuid or its 8-char prefix (see `milestones`)"
@@ -1239,13 +1260,16 @@ def main():
     sp.set_defaults(fn=cmd_import_milestone)
 
     sp = sub.add_parser(
-        "sub", help="create a local-only subtask of a Linear issue task"
+        "sub",
+                    help="add a local-only subtask (never pushed to Linear); "
+                         "the parent issue blocks on it"
     )
     sp.add_argument("ref", help="Linear identifier or taskwarrior task id")
     sp.add_argument("description", nargs="+", help="subtask description")
     sp.set_defaults(fn=cmd_sub)
 
-    sp = sub.add_parser("note", help="create/open the Obsidian note for a task")
+    sp = sub.add_parser("note",
+                    help="create/open the task's Obsidian note (--print for the path only)")
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.add_argument(
         "--print",
@@ -1255,22 +1279,31 @@ def main():
     )
     sp.set_defaults(fn=cmd_note)
 
-    sp = sub.add_parser("open", help="open the Linear issue (or note) for a task")
+    sp = sub.add_parser(
+        "open",
+        help="open the linked Linear issue in a browser — or the note, for "
+        "tasks without one",
+    )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_open)
 
-    sp = sub.add_parser("show", help="show a task together with its Linear issue")
+    sp = sub.add_parser("show",
+                    help="show a task with its issue/milestone/project and what it blocks on")
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_show)
 
     sp = sub.add_parser(
-        "done", help="complete a task; issue-tasks also close in Linear"
+        "done",
+                    help="complete a task; issue-tasks also move the Linear issue to Done "
+                         "(subtasks/umbrellas never touch Linear)"
     )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_done)
 
     sp = sub.add_parser(
-        "sync", help="git-based sync of tasks + task notes between machines"
+        "sync",
+                    help="push: export task DB + commit notes dir + git push · "
+                         "pull: git pull + uuid-upsert import"
     )
     sp.add_argument(
         "direction", choices=["push", "pull"],
@@ -1279,7 +1312,9 @@ def main():
     sp.set_defaults(fn=cmd_sync)
 
     sp = sub.add_parser(
-        "here", help="list tasks whose work dirs cover the current directory"
+        "here",
+                    help="list tasks whose work dirs (workdirs.toml) cover $PWD; "
+                         "--notes prints existing note paths for agents"
     )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.add_argument("--notes", action="store_true",
@@ -1288,7 +1323,9 @@ def main():
     sp.set_defaults(fn=cmd_here)
 
     sp = sub.add_parser(
-        "map", help="map a work dir to a project/issue/milestone (workdirs.toml)"
+        "map",
+                    help="add (or --remove) a work dir for a project/issue/milestone "
+                         "in workdirs.toml; milestone dirs inherit to their issues"
     )
     sp.add_argument("ref",
                     help="issue ident (VOIP-1), task id/uuid, milestone 8-hex "
@@ -1300,7 +1337,8 @@ def main():
 
     sp = sub.add_parser(
         "context",
-        help="set the taskwarrior context to a project/issue/milestone + children"
+                    help="activate a taskwarrior context scoping reports/tui to a "
+                         "project/issue/milestone + children; 'none' clears, 'list' shows"
     )
     sp.add_argument("ref",
                     help="issue ident, task id/uuid, milestone prefix, TW "
