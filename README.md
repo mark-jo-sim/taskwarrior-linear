@@ -165,7 +165,10 @@ Then:
 taskwarrior_linear here            # tasks relevant to $PWD
 taskwarrior_linear here --notes    # existing note paths only (agent context)
 taskwarrior_linear here --json     # machine-readable, includes note paths
+taskwarrior_linear map <ref> <dir> [--remove]
 ```
+
+`map` edits the config for you. The ref can be an issue identifier (`VOIP-5914`), a taskwarrior task id/uuid (routed by the task's UDAs — issue, milestone, or project umbrella), a milestone 8-hex prefix, or a TW project key (`VOIP` / `VOIP.slug`). Milestone dirs apply recursively to the milestone's issue-tasks and their local subtasks; project dirs to everything under the project. The file is regenerated on each `map` — inline comments don't survive, which the file's header notes.
 
 In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to the current directory; `<CR>` opens the note, `<C-o>` opens Linear.
 

@@ -969,14 +969,17 @@ def expand_dir(d):
     return Path(str(d)).expanduser().resolve()
 
 
-def dirs_for_task(t, project, cfg):
-    """Work dirs resolved for task t (project may be inherited for subtasks)."""
-    dirs = []
+def dirs_for_task(t, project, cfg, extra=None):
+    """Work dirs resolved for task t (project may be inherited for subtasks).
+    `extra` = dirs inherited from a milestone umbrella (see here_tasks)."""
+    dirs = list(extra or [])
     if t.get("workdir"):
         dirs.append(expand_dir(t["workdir"]))
-    ident = t.get("linear")
-    if ident and ident in cfg["task"]:
-        dirs += [expand_dir(d) for d in cfg["task"][ident]["dirs"]]
+    # [task] section is keyed by any Linear identifier: issue ident,
+    # milestone uuid, or project slugId
+    for k in (t.get("linear"), t.get("linearmilestone"), t.get("linearproject")):
+        if k and k in cfg["task"]:
+            dirs += [expand_dir(d) for d in cfg["task"][k]["dirs"]]
     if project:
         if project in cfg["project"]:
             dirs += [expand_dir(d) for d in cfg["project"][project]["dirs"]]
@@ -995,17 +998,104 @@ def here_tasks(cwd):
     """Pending tasks whose resolved work dirs cover cwd."""
     cwd = expand_dir(cwd)
     cfg = load_workdirs()
+    pending = tw_json("status:pending")
+    # milestone dirs apply recursively to the milestone's issue-tasks: the
+    # umbrella depends on them, so map depends-uuid -> dirs once
+    ms_dirs = {}
+    for t in pending:
+        ms = t.get("linearmilestone")
+        if ms and ms in cfg["task"]:
+            ds = [expand_dir(d) for d in cfg["task"][ms]["dirs"]]
+            for u in t.get("depends") or []:
+                ms_dirs.setdefault(u, []).extend(ds)
     out = []
-    for t in tw_json("status:pending"):
+    for t in pending:
         project = t.get("project")
+        root = None
         if not project and t.get("linear"):
             root = root_issue_task(t["linear"])
             project = (root or {}).get("project")
-        if any(cwd.is_relative_to(d) for d in dirs_for_task(t, project, cfg)):
+        # milestone dirs reach the issue-task itself and its local subtasks
+        extra = ms_dirs.get(t["uuid"]) or (root and ms_dirs.get(root["uuid"]))
+        dirs = dirs_for_task(t, project, cfg, extra)
+        if any(cwd.is_relative_to(d) for d in dirs):
             t = dict(t)
             t["_here_project"] = project
             out.append(t)
     return out
+
+
+WORKDIRS_HEADER = """\
+# Work-directory mapping for taskwarrior_linear `here`.
+# A task matches a directory when any resolved dir is an ancestor of it.
+# Resolution per task (most specific first):
+#   `workdir` UDA on the task → [task."<issue ident or milestone uuid>"]
+#   → [project."TEAM.slug"] → [project."TEAM"]. Milestone dirs apply to the
+#   milestone's issue-tasks as well.
+# Managed by `taskwarrior_linear map` — regenerated on each change, so
+# inline comments here do not survive; keep notes elsewhere.
+"""
+
+
+def save_workdirs(cfg):
+    lines = [WORKDIRS_HEADER]
+    for kind in ("project", "task"):
+        for key in sorted(cfg[kind]):
+            lines.append(f'[{kind}."{key}"]')
+            vals = ", ".join(json.dumps(d) for d in cfg[kind][key]["dirs"])
+            lines.append(f"dirs = [{vals}]")
+            lines.append("")
+    WORKDIRS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    WORKDIRS_FILE.write_text("\n".join(lines) + "\n")
+
+
+def resolve_map_ref(ref):
+    """ref → (section, key) in workdirs config.
+
+    Accepts: Linear issue ident · taskwarrior id/uuid (routed by the task's
+    UDAs: issue ident, milestone uuid, or TW project key) · milestone 8-hex
+    prefix · TW project key (TEAM or TEAM.slug).
+    """
+    if ISSUE_RE.match(ref):
+        return "task", ref
+    if re.fullmatch(r"\d+", ref) or re.fullmatch(r"[0-9a-f-]{36}", ref):
+        t = resolve(ref)
+        if t.get("linearmilestone"):
+            return "task", t["linearmilestone"]
+        if t.get("linear"):
+            return "task", t["linear"]
+        if t.get("linearproject") and t.get("project"):
+            return "project", t["project"]
+        die(f"task {t['id']} has no Linear linkage — map its project key "
+            f"instead, e.g. `map {t.get('project') or 'TEAM'} <dir>`")
+    if re.fullmatch(r"[0-9a-f]{8}", ref):
+        matches = [m for m in fetch_milestones() if m["id"].startswith(ref)]
+        if not matches:
+            die(f"no milestone id starts with {ref}")
+        if len(matches) > 1:
+            die(f"ambiguous milestone prefix {ref} — use the full uuid")
+        return "task", matches[0]["id"]
+    if re.fullmatch(r"[A-Z][A-Z0-9]*(\.[^\s]+)?", ref):
+        return "project", ref
+    die(f"unrecognized ref: {ref} (issue ident, task id/uuid, milestone "
+        f"prefix, or TW project key)")
+
+
+def cmd_map(args):
+    cfg = load_workdirs()
+    kind, key = resolve_map_ref(args.ref)
+    entry = cfg[kind].setdefault(key, {"dirs": []})
+    if args.remove:
+        entry["dirs"] = [d for d in entry["dirs"] if d != args.directory]
+        if not entry["dirs"]:
+            del cfg[kind][key]
+        print(f'unmapped {kind}."{key}": {args.directory}')
+    else:
+        if args.directory not in entry["dirs"]:
+            entry["dirs"].append(args.directory)
+        print(f'mapped {kind}."{key}": {[args.directory] + [d for d in entry["dirs"] if d != args.directory]}')
+    save_workdirs(cfg)
+    print(f"  {WORKDIRS_FILE}")
 
 
 def cmd_here(args):
@@ -1145,6 +1235,17 @@ def main():
                     help="print resolved note paths that exist (agent context)")
     sp.add_argument("--dir", help="use this directory instead of $PWD")
     sp.set_defaults(fn=cmd_here)
+
+    sp = sub.add_parser(
+        "map", help="map a work dir to a project/issue/milestone (workdirs.toml)"
+    )
+    sp.add_argument("ref",
+                    help="issue ident (VOIP-1), task id/uuid, milestone 8-hex "
+                         "prefix, or TW project key (VOIP / VOIP.slug)")
+    sp.add_argument("directory", help="work directory (~/... allowed)")
+    sp.add_argument("--remove", action="store_true",
+                    help="remove the dir instead of adding it")
+    sp.set_defaults(fn=cmd_map)
 
     args = p.parse_args()
     args.fn(args)
