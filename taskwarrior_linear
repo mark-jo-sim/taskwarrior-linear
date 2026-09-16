@@ -34,11 +34,10 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian" / "Tasks")))
+TASKS_DIR = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian" / "Tasks")))
 # daily journals (EOD goals etc.) live beside the notes dir in the Obsidian
 # vault: <vault root>/journals
-JOURNALS_DIR = Path(os.environ.get(
-    "TWL_JOURNALS_DIR", str(VAULT.parent / "journals")))
+JOURNALS_DIR = Path(os.environ.get("TWL_JOURNALS_DIR", str(TASKS_DIR / "journals")))
 API_URL = "https://api.linear.app/graphql"
 KEY_FILE = Path.home() / ".config" / "taskwarrior_linear" / "key"
 ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
@@ -372,7 +371,7 @@ def note_path_for(t):
     ident = t.get("linear")
     title = re.sub(r"^[A-Z][A-Z0-9]*-\d+\s+", "", t["description"])
     stem = f"{ident} {slugify(title)}" if ident else f"{t['uuid'][:8]} {slugify(title)}"
-    return VAULT / f"{stem}.md"
+    return TASKS_DIR / f"{stem}.md"
 
 
 def have_api_key():
@@ -862,7 +861,7 @@ def cmd_done(args):
 # bridge — `task export` writes tasks.json into the repo, `task import`
 # upserts it back by uuid.
 
-SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(VAULT)))
+SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(TASKS_DIR)))
 
 
 def git(*args, check=True):
@@ -1217,6 +1216,7 @@ def cmd_here(args):
 # --------------------------------------------------------------------------
 # Daily cycle (deterministic cores of the tw-start / tw-eod skills)
 
+
 def next_steps_of(path):
     """Text of a note's `## Next steps` section (to the next heading or EOF),
     or None if the note has no such section."""
@@ -1243,28 +1243,49 @@ def cmd_sod(args):
     for t in active:
         t["next_steps"] = next_steps_of(note_path_for(t))
     steps_notes = []
-    for p in sorted(VAULT.glob("*.md")):
+    for p in sorted(TASKS_DIR.glob("*.md")):
         steps = next_steps_of(p)
         if steps:
             steps_notes.append({"note": str(p), "next_steps": steps})
     if args.json:
-        print(json.dumps({
-            "active": [{k: t.get(k) for k in
-                        ("id", "uuid", "description", "status", "linear",
-                         "project", "due", "next_steps")}
-                       for t in active],
-            "next_steps_notes": steps_notes,
-            "due": [{k: t.get(k) for k in
-                     ("id", "description", "due", "linear")}
-                    for t in due],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "active": [
+                        {
+                            k: t.get(k)
+                            for k in (
+                                "id",
+                                "uuid",
+                                "description",
+                                "status",
+                                "linear",
+                                "project",
+                                "due",
+                                "next_steps",
+                            )
+                        }
+                        for t in active
+                    ],
+                    "next_steps_notes": steps_notes,
+                    "due": [
+                        {k: t.get(k) for k in ("id", "description", "due", "linear")}
+                        for t in due
+                    ],
+                },
+                indent=2,
+            )
+        )
         return
     if active:
         print("active tasks (+active):")
         for t in active:
             print(f"  {t['id']:>4}  {t['description']}")
-            print(f"       next steps: {t['next_steps'] or '(no Next steps section in note)'}"
-                  .replace("\n", "\n       "))
+            print(
+                f"       next steps: {t['next_steps'] or '(no Next steps section in note)'}".replace(
+                    "\n", "\n       "
+                )
+            )
     else:
         print("no +active tasks (tag with: task <id> modify +active)")
     if steps_notes:
@@ -1281,8 +1302,9 @@ def cmd_sod(args):
 def tw_cutoff(hours=24):
     """UTC cutoff `hours` ago in taskwarrior's YYYYMMDDTHHMMSSZ form. Rolling
     window — never the calendar day, so machines in other timezones agree."""
-    return ((datetime.now(timezone.utc) - timedelta(hours=hours))
-            .strftime("%Y%m%dT%H%M%SZ"))
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
+        "%Y%m%dT%H%M%SZ"
+    )
 
 
 def cmd_eod(args):
@@ -1295,43 +1317,76 @@ def cmd_eod(args):
     def in_window(t, key):
         return (t.get(key) or "") >= cutoff
 
-    finished = [t for t in all_tasks
-                if t.get("status") == "completed" and in_window(t, "end")]
+    finished = [
+        t for t in all_tasks if t.get("status") == "completed" and in_window(t, "end")
+    ]
     bucketed |= {t["uuid"] for t in finished}
-    removed = [t for t in all_tasks
-               if t.get("status") == "deleted" and in_window(t, "end")]
+    removed = [
+        t for t in all_tasks if t.get("status") == "deleted" and in_window(t, "end")
+    ]
     bucketed |= {t["uuid"] for t in removed}
-    added = [t for t in all_tasks
-             if in_window(t, "entry") and t["uuid"] not in bucketed]
+    added = [
+        t for t in all_tasks if in_window(t, "entry") and t["uuid"] not in bucketed
+    ]
     bucketed |= {t["uuid"] for t in added}
-    changed = [t for t in all_tasks
-               if in_window(t, "modified") and t["uuid"] not in bucketed]
+    changed = [
+        t for t in all_tasks if in_window(t, "modified") and t["uuid"] not in bucketed
+    ]
     now = datetime.now(timezone.utc).timestamp()
-    notes_edited = [str(p) for p in sorted(VAULT.glob("*.md"))
-                    if now - p.stat().st_mtime < 24 * 3600]
+    notes_edited = [
+        str(p)
+        for p in sorted(TASKS_DIR.glob("*.md"))
+        if now - p.stat().st_mtime < 24 * 3600
+    ]
     journal = None
     if JOURNALS_DIR.is_dir():
-        journals = sorted(JOURNALS_DIR.glob("EOD-*.md"),
-                          key=lambda p: p.stat().st_mtime, reverse=True)
+        journals = sorted(
+            JOURNALS_DIR.glob("EOD-*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+        )
         if journals and now - journals[0].stat().st_mtime < 24 * 3600:
             journal = str(journals[0])
         elif journals:
             journal = str(journals[0])  # stale, but still the newest
     if args.json:
-        slim = lambda ts: [{k: t.get(k) for k in
-                            ("id", "uuid", "description", "status", "linear",
-                             "project", "end", "entry", "modified")}
-                           for t in ts]
-        print(json.dumps({
-            "cutoff": cutoff,
-            "finished": slim(finished), "removed": slim(removed),
-            "added": slim(added), "changed": slim(changed),
-            "notes_edited": notes_edited, "journal": journal,
-        }, indent=2))
+        slim = lambda ts: [
+            {
+                k: t.get(k)
+                for k in (
+                    "id",
+                    "uuid",
+                    "description",
+                    "status",
+                    "linear",
+                    "project",
+                    "end",
+                    "entry",
+                    "modified",
+                )
+            }
+            for t in ts
+        ]
+        print(
+            json.dumps(
+                {
+                    "cutoff": cutoff,
+                    "finished": slim(finished),
+                    "removed": slim(removed),
+                    "added": slim(added),
+                    "changed": slim(changed),
+                    "notes_edited": notes_edited,
+                    "journal": journal,
+                },
+                indent=2,
+            )
+        )
         return
     print(f"last 24h (since {cutoff}):")
-    for label, ts in (("finished", finished), ("removed", removed),
-                      ("added", added), ("changed", changed)):
+    for label, ts in (
+        ("finished", finished),
+        ("removed", removed),
+        ("added", added),
+        ("changed", changed),
+    ):
         if ts:
             print(f"\n{label}:")
             for t in ts:
