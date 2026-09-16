@@ -172,7 +172,7 @@ taskwarrior_linear map <ref> <dir> [--remove]
 
 In Neovim: `:TWHere` (or `<leader>th`) — the `:TWTasks` picker pre-filtered to the current directory; `<CR>` opens the note, `<C-o>` opens Linear.
 
-For AI agents: `here --json` + `here --notes` are the stable interface — a skill or CLAUDE.md line pointing at them gives any Bash-capable agent your task context.
+For AI agents: `here --json` + `here --notes` are the stable interface. The repo ships an installable Claude Code skill (`skills/tw`, linked to `~/.claude/skills/tw` by `install.sh`, invocable as `/tw`) that pulls task + note context for a directory or a named project/issue/milestone scope — including careful use of `context` (global taskwarrior state) and the confirm-before-`done` rule.
 
 ### Taskwarrior contexts
 

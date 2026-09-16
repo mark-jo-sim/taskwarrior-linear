@@ -29,6 +29,10 @@ link "$REPO/taskwarrior_linear" "$BIN_DIR/taskwarrior_linear"
 chmod +x "$REPO/taskwarrior_linear"
 link "$REPO/lua/taskwarrior_linear.lua" "$NVIM_LUA_DIR/taskwarrior_linear.lua"
 
+SKILLS_DIR="${HOME}/.claude/skills"
+mkdir -p "$SKILLS_DIR"
+link "$REPO/skills/tw" "$SKILLS_DIR/tw"
+
 cat <<'EOF'
 
 Done. Remaining manual steps:
@@ -52,9 +56,12 @@ Done. Remaining manual steps:
 
     require("taskwarrior_linear").setup()
 
-4. Optional: Obsidian vault location (default ~/Documents/obsidian):
+4. Optional: Obsidian vault location (default ~/obsidian/Tasks):
 
-    export TWL_VAULT=/path/to/vault
+    export TWL_VAULT=/path/to/notes-dir
+
+5. Installed agent skill: ~/.claude/skills/tw (invocable as /tw in Claude
+   Code) — pulls task + note context for a directory or project scope.
 
 Verify with:
 
