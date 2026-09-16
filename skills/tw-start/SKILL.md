@@ -32,8 +32,10 @@ Summarize the sod output, don't dump it:
   checkable ("annotate 20 prod conversations"), not vague ("make progress
   on dataset")
 - Iterate with the user until they accept the set — goals are theirs
-- Write to the journals dir (`$TWL_JOURNALS_DIR`),
-  file `EOD-$(date +%F).md`:
+- Write to the journals dir (`$TWL_JOURNALS_DIR`, default
+  `~/obsidian/Tasks/journals`), file `EOD-$(date +%F).md` —
+  `taskwarrior_linear journal --print` gives today's path and creates the
+  skeleton if missing:
 
 ```markdown
 ---

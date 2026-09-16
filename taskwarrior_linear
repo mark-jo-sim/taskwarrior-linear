@@ -1307,6 +1307,33 @@ def tw_cutoff(hours=24):
     )
 
 
+def latest_journal():
+    """Newest EOD-*.md in JOURNALS_DIR by mtime, or None."""
+    if not JOURNALS_DIR.is_dir():
+        return None
+    journals = sorted(
+        JOURNALS_DIR.glob("EOD-*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    return journals[0] if journals else None
+
+
+def cmd_journal(args):
+    """Open the most recent daily journal (creating today's if none exists)."""
+    path = latest_journal()
+    created = False
+    if not path:
+        today = datetime.now().strftime("%Y-%m-%d")
+        path = JOURNALS_DIR / f"EOD-{today}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"---\ndate: {today}\n---\n\n# EOD goals — {today}\n\n")
+        created = True
+    if args.print_only:
+        print(path)
+        return
+    print(f"{'created' if created else 'opened'}: {path}")
+    open_note(path)
+
+
 def cmd_eod(args):
     """End of day: tasks finished/added/changed and notes edited in the last
     24h, plus the latest EOD goals journal."""
@@ -1338,15 +1365,8 @@ def cmd_eod(args):
         for p in sorted(TASKS_DIR.glob("*.md"))
         if now - p.stat().st_mtime < 24 * 3600
     ]
-    journal = None
-    if JOURNALS_DIR.is_dir():
-        journals = sorted(
-            JOURNALS_DIR.glob("EOD-*.md"), key=lambda p: p.stat().st_mtime, reverse=True
-        )
-        if journals and now - journals[0].stat().st_mtime < 24 * 3600:
-            journal = str(journals[0])
-        elif journals:
-            journal = str(journals[0])  # stale, but still the newest
+    journal = latest_journal()
+    journal = str(journal) if journal else None
     if args.json:
         slim = lambda ts: [
             {
@@ -1588,6 +1608,19 @@ def main():
     )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_eod)
+
+    sp = sub.add_parser(
+        "journal",
+        help="open the most recent daily EOD journal (creates today's if none); "
+        "--print for the path only",
+    )
+    sp.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="print the journal path instead of opening it",
+    )
+    sp.set_defaults(fn=cmd_journal)
 
     args = p.parse_args()
     args.fn(args)

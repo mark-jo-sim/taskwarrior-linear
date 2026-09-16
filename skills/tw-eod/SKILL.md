@@ -19,8 +19,9 @@ files, report the movement.
 
 ## Goals review
 
-- Open the journal the `eod` output names — `$TWL_JOURNALS_DIR/EOD-<date>.md`. If it says "none yet", review without
-  goals and say so
+- Open the journal the `eod` output names — `$TWL_JOURNALS_DIR/EOD-<date>.md`
+  (default `~/obsidian/Tasks/journals`; `taskwarrior_linear journal --print`
+  gives the path). If it says "none yet", review without goals and say so
 - For each goal: **met / partially met / missed**, citing evidence from the
   changed tasks and notes
 - Walk the verdicts through with the user — they confirm or correct each
