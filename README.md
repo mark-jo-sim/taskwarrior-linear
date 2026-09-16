@@ -80,7 +80,7 @@ require("taskwarrior_linear").setup({
 })
 ```
 
-**4. Obsidian vault** — defaults to `~/Documents/obsidian`; override with the `TWL_VAULT` environment variable.
+**4. Obsidian vault** — defaults to `~/obsidian`; override with the `TWL_VAULT` environment variable.
 
 ## Usage
 
@@ -116,25 +116,25 @@ taskwarrior_linear import-milestone <id> [--all]       # umbrella + its issues
 
 ### Multi-machine sync (git only, no third-party services)
 
-`sync` round-trips the whole task DB and the task notes through a git repo you control:
+The notes dir (`<vault>/Tasks`) **is** the git repo — notes live directly in the working tree, git tracks them with no copying. Only the task DB needs bridging:
 
 ```
-taskwarrior_linear sync push   # task export + notes → commit → git push
-taskwarrior_linear sync pull   # git pull + task import + notes mirror
+taskwarrior_linear sync push   # task export → tasks.json, commit, push
+taskwarrior_linear sync pull   # pull, task import (uuid upsert)
 ```
 
 How it works:
 
 - `task export` covers **all** statuses — completions and deletions travel as tombstones; `task import` upserts by uuid (add / update / skip).
 - Export emits one task per line, so git merges tasks.json cleanly; you only get a conflict when the *same task* changed on both machines since the last sync.
-- Notes (`<vault>/Tasks/`) mirror into the repo with rsync, deletions included.
-- The sync repo (default `~/projects/tw-sync`, override with `TWL_SYNC_REPO`) auto-inits on first push; add your remote once:
+- Note edits/deletes are ordinary git working-tree changes — commit and merge like any file.
+- The repo (default `~/obsidian/Tasks`, override with `TWL_SYNC_REPO`) auto-inits on first push, with a `.gitignore` for `.DS_Store`; add your remote once:
 
 ```sh
-git -C ~/projects/tw-sync remote add origin git@yourserver:git/tw-sync.git
+git -C ~/obsidian/Tasks remote add origin git@yourserver:git/tw-notes.git
 ```
 
-Server side, once: `git init --bare ~/git/tw-sync.git`.
+Server side, once: `git init --bare ~/git/tw-notes.git`.
 
 Ordering matters: run `sync push` after working on a machine and `sync pull` before working on the next — a pull from a stale repo resurrects tasks you deleted after its last push (the file predates the deletion). Twice-a-day cron on both machines works if edits don't overlap:
 

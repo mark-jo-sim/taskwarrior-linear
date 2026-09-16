@@ -34,7 +34,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "Documents" / "obsidian")))
+VAULT = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian")))
 NOTES_DIR = "Tasks"
 API_URL = "https://api.linear.app/graphql"
 KEY_FILE = Path.home() / ".config" / "taskwarrior_linear" / "key"
@@ -849,8 +849,13 @@ def cmd_done(args):
 
 # --------------------------------------------------------------------------
 # Git-based sync (tasks + task notes between machines)
+#
+# The git root IS the notes dir (<vault>/Tasks): notes live directly in the
+# working tree, so git tracks them with no copying. Only the task DB needs a
+# bridge — `task export` writes tasks.json into the repo, `task import`
+# upserts it back by uuid.
 
-SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(Path.home() / "projects" / "tw-sync")))
+SYNC_REPO = Path(os.environ.get("TWL_SYNC_REPO", str(VAULT / NOTES_DIR)))
 
 
 def git(*args, check=True):
@@ -869,6 +874,9 @@ def ensure_sync_repo():
     SYNC_REPO.mkdir(parents=True, exist_ok=True)
     if not (SYNC_REPO / ".git").exists():
         git("init", "-q")
+    gi = SYNC_REPO / ".gitignore"
+    if not gi.exists():
+        gi.write_text(".DS_Store\n")
 
 
 def git_pull_rebase():
@@ -876,13 +884,6 @@ def git_pull_rebase():
     if not git_out("remote"):
         return True  # no remote yet — local repo only
     return git("pull", "--rebase", check=False).returncode == 0
-
-
-def mirror(src, dst):
-    """rsync mirror (incl. deletions) src/ -> dst/."""
-    dst.mkdir(parents=True, exist_ok=True)
-    subprocess.run(["rsync", "-a", "--delete", str(src) + "/", str(dst) + "/"],
-                   check=True)
 
 
 def sync_push():
@@ -894,9 +895,6 @@ def sync_push():
     # upserts by uuid. Export is one task per line → git merges cleanly
     # unless the same task changed on both machines.
     (SYNC_REPO / "tasks.json").write_text(task("export"))
-    src = VAULT / NOTES_DIR
-    if src.exists():
-        mirror(src, SYNC_REPO / "notes" / NOTES_DIR)
     if git_out("status", "--porcelain"):
         git("add", "-A")
         git("commit", "-q", "-m",
@@ -923,10 +921,6 @@ def sync_pull():
                   for a in ("add", "mod", "del", "skip")}
         print(f"taskwarrior: {counts['add']} added, {counts['mod']} updated, "
               f"{counts['del']} deleted, {counts['skip']} unchanged")
-    notes = SYNC_REPO / "notes" / NOTES_DIR
-    if notes.exists():
-        mirror(notes, VAULT / NOTES_DIR)
-        print(f"notes → {VAULT / NOTES_DIR}")
 
 
 def cmd_sync(args):
