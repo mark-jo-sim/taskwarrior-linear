@@ -1,12 +1,12 @@
 ---
 name: tw-eod
-description: End-of-day review — run the eod command (tasks finished/added/changed and notes edited in the last 24 hours, rolling window), read the changed notes, then review progress against the EOD goals with the user. Trigger on "end of day", "EOD", "wrap up", "daily review", "day is done"
+description: End-of-day review — run the eod command (tasks finished/added/changed and notes edited in the last 24 hours, rolling window), read the changed notes, then review progress against today's Obsidian daily note's EOD goals with the user. Trigger on "end of day", "EOD", "wrap up", "daily review", "day is done"
 ---
 
 # End of day
 
 The deterministic gathering is one command (rolling 24h window — timezone-safe
-by construction; it also names the latest EOD journal):
+by construction):
 
 ```sh
 taskwarrior_linear eod            # or --json
@@ -19,15 +19,29 @@ files, report the movement.
 
 ## Goals review
 
-- Open the journal the `eod` output names — `$TWL_JOURNALS_DIR/EOD-<date>.md`
-  (default `~/obsidian/Tasks/journals`; `taskwarrior_linear journal --print`
-  gives the path). If it says "none yet", review without goals and say so
+- The journal is today's Obsidian daily note —
+  `~/obsidian/journals/YYYY-MM-DD.md`, the same file `:ObsidianToday` opens
+  (obsidian.nvim `daily_notes.folder` is `journals`). Ignore the
+  `EOD-<date>.md` path the eod output names — legacy location, superseded by
+  the daily note. If today's note is missing, create it with:
+
+  ```sh
+  nvim --headless "+ObsidianToday" +qa
+  ```
+
+- Goals live under `## Prepare` → `### EOD goals` in that note. If the note
+  has none (placeholders or empty), review without goals and say so
 - For each goal: **met / partially met / missed**, citing evidence from the
   changed tasks and notes
 - Walk the verdicts through with the user — they confirm or correct each
-  one; then update the checkboxes in the journal to match reality
+  one; then update the `### EOD goals` checkboxes in the note to match
+  reality
+- Fill in `## Review` as you go: `### Progress` with the day's movement
+  (finished/added/changed tasks, notes edited), `### Blockers` with what
+  stalled and why
 - Missed/partial goals: if the user agrees, append them under
-  `## Carried over` so tw-start picks them up tomorrow
+  `### Plan` — tomorrow's tw-start carries `### Plan` items into the new
+  note's `### EOD goals`
 
 ## Wrap up
 

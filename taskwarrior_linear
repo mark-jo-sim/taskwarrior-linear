@@ -35,9 +35,11 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 TASKS_DIR = Path(os.environ.get("TWL_VAULT", str(Path.home() / "obsidian" / "Tasks")))
-# daily journals (EOD goals etc.) live beside the notes dir in the Obsidian
-# vault: <vault root>/journals
-JOURNALS_DIR = Path(os.environ.get("TWL_JOURNALS_DIR", str(TASKS_DIR / "journals")))
+# Daily journals are Obsidian daily notes — <vault root>/journals/YYYY-MM-DD.md,
+# the files obsidian.nvim's :ObsidianToday opens (daily_notes.folder = "journals").
+JOURNALS_DIR = Path(
+    os.environ.get("TWL_JOURNALS_DIR", str(TASKS_DIR.parent / "journals"))
+)
 API_URL = "https://api.linear.app/graphql"
 KEY_FILE = Path.home() / ".config" / "taskwarrior_linear" / "key"
 ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
@@ -45,6 +47,8 @@ ISSUE_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
 # Linear priority: 0 none, 1 urgent, 2 high, 3 normal, 4 low. Taskwarrior
 # priority UDA here only defines H and L.
 PRIORITY_MAP = {1: "H", 2: "H", 4: "L"}
+
+DAILY_CUTOFF_HOURS = 12
 
 
 def die(msg, code=1):
@@ -1217,16 +1221,16 @@ def cmd_here(args):
 # Daily cycle (deterministic cores of the tw-start / tw-eod skills)
 
 
-def next_steps_of(path):
-    """Text of a note's `## Next steps` section (to the next heading or EOF),
-    or None if the note has no such section."""
+def section_of(path, heading):
+    """Text of a note's `##...# <heading>` section (to the next heading or
+    EOF), or None if the note has no such section."""
     try:
         lines = path.read_text().splitlines()
     except OSError:
         return None
     out, capturing = [], False
     for line in lines:
-        if re.fullmatch(r"##\s+Next steps\s*", line):
+        if re.fullmatch(rf"#{{1,6}}\s+{re.escape(heading)}\s*", line):
             capturing = True
             continue
         if capturing and re.match(r"#{1,6}\s", line):
@@ -1236,10 +1240,16 @@ def next_steps_of(path):
     return "\n".join(out).strip() or None if capturing else None
 
 
+def next_steps_of(path):
+    return section_of(path, "Next steps")
+
+
 def cmd_sod(args):
     """Start of day: +active tasks, notes' Next steps, due/overdue."""
     active = tw_json("status:pending", "+active")
     due = tw_json("status:pending", "due.before:tomorrow")
+    prev_note = latest_journal(before=datetime.now().date())
+    carry_items = carry_over_from(prev_note) if prev_note else []
     for t in active:
         t["next_steps"] = next_steps_of(note_path_for(t))
     steps_notes = []
@@ -1272,6 +1282,11 @@ def cmd_sod(args):
                         {k: t.get(k) for k in ("id", "description", "due", "linear")}
                         for t in due
                     ],
+                    "daily_note": str(daily_note_path()),
+                    "carry_over": {
+                        "from": str(prev_note) if prev_note else None,
+                        "items": carry_items,
+                    },
                 },
                 indent=2,
             )
@@ -1296,10 +1311,21 @@ def cmd_sod(args):
         print("\ndue today / overdue:")
         for t in due:
             print(f"  {t['id']:>4}  {t.get('due', '')[:8]}  {t['description']}")
-    print(f"\nEOD goals journal: {JOURNALS_DIR}/EOD-<date>.md")
+    note = daily_note_path()
+    print(
+        f"\nDaily note: {note}"
+        + ("" if note.exists() else "  (missing — :ObsidianToday creates it)")
+    )
+    if prev_note:
+        if carry_items:
+            print(f"carry-over candidates (from {prev_note.name}):")
+            for item in carry_items:
+                print(f"  {item}")
+        else:
+            print(f"(no carry-over candidates in {prev_note.name})")
 
 
-def tw_cutoff(hours=24):
+def tw_cutoff(hours=DAILY_CUTOFF_HOURS):
     """UTC cutoff `hours` ago in taskwarrior's YYYYMMDDTHHMMSSZ form. Rolling
     window — never the calendar day, so machines in other timezones agree."""
     return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
@@ -1307,26 +1333,85 @@ def tw_cutoff(hours=24):
     )
 
 
-def latest_journal():
-    """Newest EOD-*.md in JOURNALS_DIR by mtime, or None."""
+def daily_note_path(day=None):
+    """Path of the daily note for `day` (default today):
+    <journals>/YYYY-MM-DD.md, the file obsidian.nvim's :ObsidianToday uses."""
+    d = day if day is not None else datetime.now()
+    return JOURNALS_DIR / (d.strftime("%Y-%m-%d") + ".md")
+
+
+def ensure_today_note(path):
+    """Create today's daily note via obsidian.nvim's :ObsidianToday (template
+    + calendar/tasks substitutions stay the single source of truth) if it
+    doesn't exist yet. Returns True if created.
+
+    nvim creates the note in its own workspace's journals dir; when
+    $TWL_JOURNALS_DIR points elsewhere, the note is copied over from there.
+    """
+    if path.exists():
+        return False
+    r = subprocess.run(
+        ["nvim", "--headless", "+ObsidianToday", "+qa"],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        die(
+            f"creating today's daily note via nvim +ObsidianToday failed: {r.stderr.strip()}"
+        )
+    if not path.exists():
+        vault_note = TASKS_DIR.parent / "journals" / path.name
+        if vault_note != path and vault_note.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(vault_note.read_bytes())
+    if not path.exists():
+        die(
+            f"today's daily note not created at {path} — nvim's obsidian.nvim "
+            "workspace may point at a different vault"
+        )
+    return True
+
+
+def latest_journal(before=None):
+    """Newest daily note (YYYY-MM-DD.md) in JOURNALS_DIR strictly before the
+    date `before`, by filename date, or None."""
     if not JOURNALS_DIR.is_dir():
         return None
-    journals = sorted(
-        JOURNALS_DIR.glob("EOD-*.md"), key=lambda p: p.stat().st_mtime, reverse=True
+    cutoff = before.strftime("%Y-%m-%d") if before else None
+    notes = sorted(
+        (
+            p
+            for p in JOURNALS_DIR.glob("*.md")
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.stem)
+            and (cutoff is None or p.stem < cutoff)
+        ),
+        reverse=True,
     )
-    return journals[0] if journals else None
+    return notes[0] if notes else None
+
+
+def carry_over_from(path):
+    """Carry-over candidates from a past daily note: its '### Plan' items
+    (written by tw-eod) plus unchecked '### EOD goals' items."""
+    out = []
+    plan = section_of(path, "Plan")
+    if plan:
+        out += [line.strip() for line in plan.splitlines() if line.strip()]
+    goals = section_of(path, "EOD goals")
+    if goals:
+        out += [
+            line.strip()
+            for line in goals.splitlines()
+            if line.lstrip().startswith("- [ ]")
+        ]
+    return out
 
 
 def cmd_journal(args):
-    """Open the most recent daily journal (creating today's if none exists)."""
-    path = latest_journal()
-    created = False
-    if not path:
-        today = datetime.now().strftime("%Y-%m-%d")
-        path = JOURNALS_DIR / f"EOD-{today}.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"---\ndate: {today}\n---\n\n# EOD goals — {today}\n\n")
-        created = True
+    """Open today's daily note (creating it from the vault template if
+    missing)."""
+    path = daily_note_path()
+    created = ensure_today_note(path)
     if args.print_only:
         print(path)
         return
@@ -1336,8 +1421,8 @@ def cmd_journal(args):
 
 def cmd_eod(args):
     """End of day: tasks finished/added/changed and notes edited in the last
-    24h, plus the latest EOD goals journal."""
-    cutoff = tw_cutoff(24)
+    DAILY_CUTOFF_HOURS, plus today's daily note (EOD goals live there)."""
+    cutoff = tw_cutoff(DAILY_CUTOFF_HOURS)
     all_tasks = tw_json()
     bucketed = set()
 
@@ -1363,10 +1448,10 @@ def cmd_eod(args):
     notes_edited = [
         str(p)
         for p in sorted(TASKS_DIR.glob("*.md"))
-        if now - p.stat().st_mtime < 24 * 3600
+        if now - p.stat().st_mtime < DAILY_CUTOFF_HOURS * 3600
     ]
-    journal = latest_journal()
-    journal = str(journal) if journal else None
+    note = daily_note_path()
+    journal = str(note) if note.exists() else None
     if args.json:
         slim = lambda ts: [
             {
@@ -1400,7 +1485,7 @@ def cmd_eod(args):
             )
         )
         return
-    print(f"last 24h (since {cutoff}):")
+    print(f"last DAILY_CUTOFF_HOURS (since {cutoff}):")
     for label, ts in (
         ("finished", finished),
         ("removed", removed),
@@ -1415,7 +1500,10 @@ def cmd_eod(args):
         print("\nnotes edited:")
         for n in notes_edited:
             print(f"  {Path(n).name}")
-    print(f"\njournal: {journal or 'none yet — tw-start drafts one'}")
+    print(
+        f"\nDaily note: {note}"
+        + ("" if journal else "  (missing — create with: taskwarrior_linear journal)")
+    )
 
 
 HELP_DESCRIPTION = """\
@@ -1604,15 +1692,15 @@ def main():
     sp = sub.add_parser(
         "eod",
         help="end of day: tasks finished/added/changed + notes edited in the "
-        "last 24h (rolling window), latest EOD journal — core of tw-eod",
+        "last DAILY_CUTOFF_HOURS (rolling window), today's daily note — core of tw-eod",
     )
     sp.add_argument("--json", action="store_true", help="machine-readable output")
     sp.set_defaults(fn=cmd_eod)
 
     sp = sub.add_parser(
         "journal",
-        help="open the most recent daily EOD journal (creates today's if none); "
-        "--print for the path only",
+        help="open today's Obsidian daily note (creates it from the vault "
+        "template if missing); --print for the path only",
     )
     sp.add_argument(
         "--print",
