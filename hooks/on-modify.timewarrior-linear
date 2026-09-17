@@ -1,0 +1,57 @@
+#!/usr/bin/env python3
+"""on-modify hook: sync timewarrior to task start/stop transitions.
+
+Protocol (taskwarrior.org/docs/hooks/): stdin carries the old and new task
+JSON, stdout must be the (possibly modified) new task JSON. This hook never
+modifies the task and never exits non-zero — a broken hook must not break
+`task`. Diagnostics go to stderr. All real work lives in the CLI's hidden
+`_hook` subcommand; this shim only detects the transition.
+"""
+
+import json
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+MAX_SKEW = timedelta(minutes=5)  # older start attrs are sync/import artifacts
+
+
+def cli():
+    here = Path(__file__).resolve()  # resolves through the ~/.task/hooks symlink
+    local = here.parent.parent / "taskwarrior_linear"
+    return str(local) if local.exists() else "taskwarrior_linear"
+
+
+def main():
+    lines = [l for l in sys.stdin.read().splitlines() if l.strip()]
+    if not lines:
+        sys.exit(0)
+    sys.stdout.write(lines[-1] + "\n")  # always emit the new task JSON, untouched
+    try:
+        new = json.loads(lines[-1])
+        old = json.loads(lines[-2]) if len(lines) > 1 else {}
+        old_active = old.get("status") == "pending" and old.get("start")
+        new_active = new.get("status") == "pending" and new.get("start")
+        if new_active and not old_active:
+            started = datetime.strptime(new["start"], "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            if datetime.now(timezone.utc) - started > MAX_SKEW:
+                return  # stale start (sync/import artifact) — no local interval
+            event, extra = "start", new["start"]
+        elif old_active and not new_active:
+            event, extra = "stop", ""  # covers stop, done, delete
+        else:
+            return  # unrelated modify of an active task
+        subprocess.run(
+            [cli(), "_hook", new["uuid"], event, extra],
+            capture_output=True,
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"taskwarrior-linear hook: {e}", file=sys.stderr)
+    sys.exit(0)
+
+
+main()

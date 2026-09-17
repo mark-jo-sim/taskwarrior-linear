@@ -26,6 +26,7 @@ Bridge [Linear](https://linear.app) into [Taskwarrior](https://taskwarrior.org) 
 - Taskwarrior 3.x
 - A Linear API key (linear.app → Settings → API)
 - Neovim 0.9+ with [telescope.nvim](https://github.com/nvim-telescope/telescope.nvim) (optional)
+- [Timewarrior](https://timewarrior.net) (optional — time tracking degrades gracefully without it)
 - macOS (Keychain storage, `open`) — Linux works if you use the env-var/file key options and don't rely on `open`
 
 ## Install
@@ -36,7 +37,7 @@ cd taskwarrior-linear
 ./install.sh
 ```
 
-The installer symlinks the CLI into `~/.local/bin` and the Neovim module into `~/.config/nvim/lua/`. Then:
+The installer symlinks the CLI into `~/.local/bin`, the agent skills into `~/.claude/skills`, and the timewarrior hook into `~/.task/hooks`. The Neovim module is not installed — load it straight from the repo (below). Then:
 
 **1. Taskwarrior UDAs** — add to `~/.taskrc` (installer prints this reminder):
 
@@ -66,10 +67,14 @@ chmod 600 ~/.config/taskwarrior_linear/key
 
 Resolution order: `LINEAR_API_KEY` → key file → Keychain.
 
-**3. Neovim** — add to your `init.lua` (after your plugin manager setup):
+**3. Neovim** — add to your `init.lua` (after your plugin manager setup). The module loads from the repo via `runtimepath` — one source of truth, no vendored copy to keep in sync; `TWL_REPO` overrides the default clone path:
 
 ```lua
-require("taskwarrior_linear").setup()
+local twl_repo = vim.fn.expand(os.getenv("TWL_REPO") or "~/projects/taskwarrior-linear")
+if vim.fn.isdirectory(twl_repo .. "/lua") == 1 then
+  vim.opt.runtimepath:append(twl_repo)
+  require("taskwarrior_linear").setup()
+end
 ```
 
 Optional config:
@@ -201,6 +206,35 @@ taskwarrior_linear context list
 
 Sets a native taskwarrior context (read-only — new tasks are not auto-tagged), so `task`, `taskwarrior-tui`, and reports all narrow to that scope. Subtasks inherit their parent's project on creation, which is what lets project contexts cover them.
 
+### Time tracking (timewarrior)
+
+Timewarrior (`brew install timewarrior`, optional) tracks time per task. An on-modify hook (installed by `install.sh` into `~/.task/hooks`) syncs it to taskwarrior — `task <id> start` from anywhere (CLI, taskwarrior-tui, scripts) opens a timew interval, `stop`/`done`/`delete` closes it. Each interval is tagged `uuid`, the Linear ident, the taskwarrior project, and the description, so `timew summary :week VOIP-5914` rolls up an issue (subtasks included) directly in timewarrior. A task's note is created automatically on start, and on every stop the note's frontmatter gains machine-owned time fields:
+
+```yaml
+time_total: 3h 25m
+time_by_subtask:
+  "a1b2c3d4 pull 20 random conversations": 1h 10m
+  "e5f6a7b8 transcribe + spot-check": 55m
+time_updated: 2026-09-17T14:32:01
+```
+
+```
+taskwarrior_linear start VOIP-5914   # task start + timew + note
+taskwarrior_linear stop 12           # task stop; note frontmatter refreshed
+taskwarrior_linear switch VOIP-5910  # stop whatever runs, start this
+taskwarrior_linear time VOIP-5914    # issue total + per-subtask breakdown
+taskwarrior_linear status            # "▶ VOIP-5914 Sample prod convos · 1h 23m", empty when idle
+```
+
+For a tmux status line:
+
+```sh
+set -g status-interval 30
+set -g status-right '#(taskwarrior_linear status)'
+```
+
+Timew data lives in `~/.timewarrior`, local per machine — it is not synced; the frontmatter projection travels with the notes git repo instead. Cross-machine: the taskwarrior `start` attr syncs via `tasks.json` but timew doesn't, so machine B reports idle while A tracks — by design.
+
 ### Taskwarrior filters
 
 The UDAs are plain Taskwarrior filters:
@@ -217,6 +251,7 @@ task +LATEST project:VOIP.*  # normal taskwarrior, now Linear-aware
 - Taskwarrior prints `Configuration override ...` to stderr for any `rc.xxx=...` override. If you shell out to `task` and parse stdout+stderr merged (e.g. Lua's `vim.fn.system`), the JSON breaks — use plain `task status:pending export`.
 - Taskwarrior 3.4 rejects the documented `depends:+N` modify syntax; this tool merges dependency lists explicitly.
 - Linear's GraphQL query complexity cap (10000) forbids fetching all projects × their issues in one query — listings use scalar `scope`/`progress` fields instead.
+- Time-tracking gotchas: the `+active` taskwarrior tag (sod/eod convention) is manual and unrelated to timew's active interval; frontmatter is written on stop/switch/done only, so a running task's `time_total` lags until you stop it; timewarrior parses tz-less timestamps as **local** time — the hook always passes UTC with a `Z` suffix; the on-modify hook ignores start attrs older than 5 minutes, so a task that arrives already-started via `sync pull` never opens a phantom interval.
 
 ## License
 

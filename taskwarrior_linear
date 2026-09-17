@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -174,6 +175,73 @@ def is_subtask(t):
         for o in tw_json("status:pending", f"linear:{ident}")
         if o["uuid"] != t["uuid"]
     )
+
+
+# --------------------------------------------------------------------------
+# Timewarrior (local, per machine — the source of truth for time)
+
+
+def timew(*args):
+    """Run timewarrior. check is always off: a timew problem (not installed,
+    "no active tracking", ...) must never break a task command."""
+    return subprocess.run(["timew", *args], capture_output=True, text=True)
+
+
+def timew_available():
+    return shutil.which("timew") is not None
+
+
+def timew_export():
+    """All intervals as a list of dicts; open ones have no "end"."""
+    if not timew_available():
+        return []
+    try:
+        return json.loads(timew("export").stdout)
+    except ValueError:
+        return []
+
+
+def tw_time_parse(s):
+    # timew date format: 20260917T093000Z (UTC)
+    return datetime.strptime(s, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+
+
+def interval_seconds(iv, now=None):
+    end = tw_time_parse(iv["end"]) if iv.get("end") else (now or datetime.now(timezone.utc))
+    return (end - tw_time_parse(iv["start"])).total_seconds()
+
+
+def human_duration(seconds):
+    minutes = max(0, round(seconds / 60))
+    if minutes < 60:
+        return f"{minutes}m"
+    h, m = divmod(minutes, 60)
+    return f"{h}h {m:02d}m" if m else f"{h}h"
+
+
+def timew_seconds(tag, data=None):
+    if data is None:
+        data = timew_export()
+    return sum(interval_seconds(iv) for iv in data if tag in iv.get("tags", []))
+
+
+def active_interval(data=None):
+    if data is None:
+        data = timew_export()
+    open_ = [iv for iv in data if not iv.get("end")]
+    return open_[0] if open_ else None
+
+
+def timew_tags_for(t):
+    # uuid = exact per-task lookup; linear ident = issue+subtask rollup;
+    # project = project rollup; description = human-readable `timew` output.
+    tags = [t["uuid"]]
+    if t.get("linear"):
+        tags.append(t["linear"])
+    if t.get("project"):
+        tags.append(t["project"])
+    tags.append(t["description"])
+    return tags
 
 
 # --------------------------------------------------------------------------
@@ -427,6 +495,124 @@ def ensure_note(t):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
     return path, True
+
+
+def upsert_frontmatter(path, fields, nested=None):
+    """Update scalar `fields` and `nested` maps inside a note's leading YAML
+    frontmatter, preserving the rest of the file byte-for-byte. Values are
+    written verbatim — quote them (json.dumps) where YAML needs it. Returns
+    True if the file changed; False when there is no well-formed leading
+    frontmatter block (such files are never mangled)."""
+    text = path.read_text()
+    lines = text.split("\n")
+    if not lines or lines[0] != "---":
+        return False
+    close = None
+    for i in range(1, len(lines)):
+        if lines[i] == "---":
+            close = i
+            break
+    if close is None:
+        return False
+
+    def strip_key(keys, key):
+        # drop `key:` plus its indented continuation lines (nested maps)
+        pat = re.compile(rf"^{re.escape(key)}:")
+        out, skip = [], False
+        for l in keys:
+            if pat.match(l):
+                skip = True
+                continue
+            if skip and l.startswith("  "):
+                continue
+            skip = False
+            out.append(l)
+        return out
+
+    head = lines[1:close]
+    for key in list(fields) + list(nested or {}):
+        head = strip_key(head, key)
+    for key, val in fields.items():
+        head.append(f"{key}: {val}")
+    for key, mapping in (nested or {}).items():
+        if not mapping:  # stripped above; an empty map leaves no key line
+            continue
+        head.append(f"{key}:")
+        for k, v in mapping.items():
+            head.append(f"  {k}: {v}")
+    new = "\n".join(["---", *head, *lines[close:]])
+    if new == text:
+        return False
+    path.write_text(new)
+    return True
+
+
+def subtask_time_breakdown(root, data=None):
+    """Per-dependency tracked time as [(label, seconds)], >0 only, longest
+    first. Reads timew tags by uuid, so completed subtasks count too — unlike
+    subtasks_of, which only sees pending ones."""
+    if data is None:
+        data = timew_export()
+    out = []
+    for u in root.get("depends") or []:
+        s = timew_seconds(u, data)
+        if s <= 0:
+            continue
+        ts = tw_json(f"uuid:{u}")
+        desc = ts[0]["description"] if ts else "?"
+        out.append((f"{u[:8]} {desc}", s))
+    return sorted(out, key=lambda x: -x[1])
+
+
+def write_time_frontmatter(t, data=None):
+    """Refresh the time_* fields in the root issue note after a stop/done
+    event. t may be the root issue-task, one of its subtasks, or an umbrella.
+    The time_* keys are machine-owned; the note body is never touched. No-op
+    without timew or without a note (notes are created on start)."""
+    if not timew_available():
+        return
+    root = t
+    if t.get("linear") and is_subtask(t):
+        root = root_issue_task(t["linear"])
+    if root is None:
+        matches = sorted(TASKS_DIR.glob(f"{t['linear']} *.md"))
+        if not matches:
+            return
+        path = matches[0]
+    else:
+        # the root note is where the issue rollup lives — create it if the
+        # root task itself was never started (time tracked on subtasks only)
+        path, _ = ensure_note(root)
+    if not path.exists():
+        return
+    if data is None:
+        data = timew_export()
+    ident = root.get("linear")
+    total = timew_seconds(ident if ident else root["uuid"], data)
+    upsert_frontmatter(
+        path,
+        {
+            "time_total": human_duration(total),
+            "time_updated": datetime.now().isoformat(timespec="seconds"),
+        },
+        nested={
+            "time_by_subtask": {
+                json.dumps(label): human_duration(s)
+                for label, s in subtask_time_breakdown(root, data)
+            }
+        },
+    )
+    if t["uuid"] != root.get("uuid"):
+        # a subtask's own note carries its own tracked time too
+        own = note_path_for(t)
+        if own.exists():
+            upsert_frontmatter(
+                own,
+                {
+                    "time_total": human_duration(timew_seconds(t["uuid"], data)),
+                    "time_updated": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
 
 
 def open_url(url):
@@ -783,6 +969,14 @@ def cmd_show(args):
         print(f"  linear:   {ident}")
     if t.get("depends"):
         print(f"  depends:  {' '.join(t['depends'])}")
+    if timew_available():
+        data = timew_export()
+        mine = timew_seconds(t["uuid"], data)
+        if mine > 0:
+            extra = ""
+            if ident and not is_subtask(t):
+                extra = f"  (issue total {human_duration(timew_seconds(ident, data))})"
+            print(f"  time:     {human_duration(mine)}{extra}")
     if ident:
         issue = fetch_issue(ident)
         print(f"\nissue {issue['identifier']} — {issue['title']}")
@@ -855,6 +1049,102 @@ def cmd_done(args):
         {"id": issue["id"], "input": {"stateId": state["id"]}},
     )
     print(f"linear {ident} → {state['name']}")
+
+
+def cmd__hook(args):
+    """Internal — invoked by the on-modify hook (hooks/on-modify.timewarrior-
+    linear), which passes the new task's start timestamp because this runs
+    while the DB still holds pre-modify state (a just-started task exports
+    without a `start` attr here; a just-done one still as pending). Never
+    dies loudly — the hook shim ignores the exit code."""
+    ts = tw_json(f"uuid:{args.uuid}")
+    if not ts:
+        return
+    t = ts[0]
+    if args.event == "start":
+        ensure_note(t)  # every start path gets a note, raw `task` included
+        # backdate the interval to the taskwarrior start timestamp (raw TW
+        # format from the hook). timew reads tz-less timestamps as local time
+        # and chokes on "+00:00" — the Z suffix is the UTC form it accepts.
+        started = tw_time_parse(args.started) if args.started else datetime.now(timezone.utc)
+        timew("start", started.strftime("%Y-%m-%dT%H:%M:%SZ"), ":yes", *timew_tags_for(t))
+    else:
+        # several tasks may be TW-active at once; timew tracks one — only
+        # stop when the open interval is this task's
+        iv = active_interval()
+        if iv and args.uuid in iv.get("tags", []):
+            timew("stop", ":yes")  # "no active tracking" errors are swallowed
+        write_time_frontmatter(t)
+
+
+def cmd_start(args):
+    t = resolve(args.ref)
+    if not t.get("start"):
+        task(str(t["id"]), "start")  # the on-modify hook starts timew + note
+    path, _ = ensure_note(t)  # idempotent, in case the hook missed
+    print(f"started {t['id']}: {t['description']}")
+    print(f"  note: {path}")
+
+
+def cmd_stop(args):
+    t = resolve(args.ref)
+    if not t.get("start"):
+        print(f"task {t['id']} is not active")
+        return
+    task(str(t["id"]), "stop")  # the on-modify hook stops timew + writes note
+    print(f"stopped {t['id']}: {t['description']}")
+
+
+def cmd_switch(args):
+    t = resolve(args.ref)
+    for cur in tw_json("status:pending"):
+        if cur.get("start") and cur["uuid"] != t["uuid"]:
+            task(str(cur["id"]), "stop")  # hook closes that interval
+    if not t.get("start"):
+        task(str(t["id"]), "start")
+    print(f"switched to {t['id']}: {t['description']}")
+
+
+def cmd_time(args):
+    t = resolve(args.ref)
+    if not timew_available():
+        print("timewarrior not installed — time not tracked")
+        return
+    data = timew_export()
+    mine = timew_seconds(t["uuid"], data)
+    ident = t.get("linear")
+    if ident and not is_subtask(t):
+        total = timew_seconds(ident, data)
+        print(f"issue total (incl. subtasks): {human_duration(total)}")
+        for label, s in subtask_time_breakdown(t, data):
+            print(f"  {label}: {human_duration(s)}")
+        print(f"this task: {human_duration(mine)}")
+    else:
+        print(human_duration(mine))
+
+
+def cmd_status(args):
+    """One-line active-tracking status for a tmux status bar — prints
+    nothing and exits 0 when idle. Timew is the only source here; the +active
+    taskwarrior tag (sod/eod convention) and the TW `start` attr are not
+    consulted."""
+    if not timew_available():
+        return
+    iv = active_interval()
+    if not iv:
+        return
+    tags = iv.get("tags", [])
+    uuid = next((x for x in tags if re.fullmatch(r"[0-9a-f-]{36}", x)), None)
+    if not uuid:
+        return  # interval not started by this tool
+    ident = next((x for x in tags if ISSUE_RE.match(x)), None)
+    try:
+        ts = tw_json(f"uuid:{uuid}")
+        desc = ts[0]["description"] if ts else uuid[:8]
+    except (SystemExit, ValueError):
+        desc = uuid[:8]
+    label = f"{ident} {desc}" if ident else desc
+    print(f"▶ {label} · {human_duration(interval_seconds(iv))}")
 
 
 # --------------------------------------------------------------------------
@@ -1626,6 +1916,39 @@ def main():
     )
     sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
     sp.set_defaults(fn=cmd_done)
+
+    sp = sub.add_parser(
+        "start", help="start a task — taskwarrior start + timewarrior tracking + note"
+    )
+    sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
+    sp.set_defaults(fn=cmd_start)
+
+    sp = sub.add_parser("stop", help="stop a task and its timewarrior tracking")
+    sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
+    sp.set_defaults(fn=cmd_stop)
+
+    sp = sub.add_parser(
+        "switch", help="stop whatever is running and start this task"
+    )
+    sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
+    sp.set_defaults(fn=cmd_switch)
+
+    sp = sub.add_parser(
+        "time", help="time tracked on a task — issue total + per-subtask breakdown"
+    )
+    sp.add_argument("ref", help="taskwarrior task id, uuid, or Linear identifier")
+    sp.set_defaults(fn=cmd_time)
+
+    sp = sub.add_parser(
+        "status", help="one-line active-tracking status for tmux; empty when idle"
+    )
+    sp.set_defaults(fn=cmd_status)
+
+    sp = sub.add_parser("_hook", help=argparse.SUPPRESS)  # hook-facing, internal
+    sp.add_argument("uuid")
+    sp.add_argument("event", choices=["start", "stop"])
+    sp.add_argument("started", nargs="?", help="new task's start attr (hook runs pre-save)")
+    sp.set_defaults(fn=cmd__hook)
 
     sp = sub.add_parser(
         "sync",
